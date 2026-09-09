@@ -1,0 +1,64 @@
+import type { Express, Request, Response, NextFunction } from "express";
+import { pool } from "./db.js";
+
+const SITE_ORIGIN = process.env.SITE_ORIGIN ?? "https://otg.golf";
+
+function requireKey(req: Request, res: Response, next: NextFunction) {
+    const key = process.env.OTG_READ_KEY;
+    if (!key) return res.status(500).json({ error: "OTG_READ_KEY not configured" });
+    if (req.header("X-OTG-Key") !== key) return res.status(401).json({ error: "unauthorized" });
+    next();
+}
+
+export function mountRoutes(app: Express) {
+    // Public, cacheable, CORS-limited to the site. Replaces the hand-edited site constants.
+  app.get("/public/counters", async (_req, res) => {
+        const q = await pool.query(`
+              select
+                      (select seat_cap from price_map where tier = 'founding' limit 1) as founding_cap,
+                              (select count(*) from memberships where tier = 'founding' and status in ('trialing','active','past_due')) as founding_used,
+                                      (select seat_cap from price_map where product = 'winter_league_s1' limit 1) as league_cap,
+                                              (select count(*) from purchases where product = 'winter_league_s1') as league_used
+                                                  `);
+        const r = q.rows[0];
+        const remaining = (cap: number | null, used: string) => cap == null ? null : Math.max(0, cap - Number(used));
+        res.set("Cache-Control", "public, max-age=60");
+        res.set("Access-Control-Allow-Origin", SITE_ORIGIN);
+        res.json({
+                founding_seats_remaining: remaining(r.founding_cap, r.founding_used),
+                league_s1_spots_remaining: remaining(r.league_cap, r.league_used),
+                as_of: new Date().toISOString(),
+        });
+  });
+
+  // Keyed reads for Chase / the founders' update.
+  app.get("/people", requireKey, async (req, res) => {
+        const tag = typeof req.query.tag === "string" ? req.query.tag : null;
+        const q = await pool.query(
+                `select p.id, p.name, p.phone, p.email,
+                              coalesce(array_agg(distinct t.tag) filter (where t.tag is not null), '{}') as tags,
+                                            m.tier, m.status
+                                                     from players p
+                                                              left join tags t on t.player_id = p.id
+                                                                       left join lateral (select tier, status from memberships where player_id = p.id order by updated_at desc limit 1) m on true
+                                                                               where $1::text is null or exists (select 1 from tags x where x.player_id = p.id and x.tag = $1)
+                                                                                       group by p.id, m.tier, m.status
+                                                                                               order by p.created_at`,
+                [tag]
+              );
+        res.json({ count: q.rowCount, people: q.rows });
+  });
+
+  app.get("/people/:id", requireKey, async (req, res) => {
+        const id = req.params.id;
+        const p = await pool.query("select * from players where id = $1", [id]).catch(() => ({ rows: [] }));
+        if (!p.rows[0]) return res.status(404).json({ error: "not found" });
+        const [m, pu, t, ev] = await Promise.all([
+                pool.query("select stripe_subscription_id, tier, status, current_period_end, trial_end from memberships where player_id = $1", [id]),
+                pool.query("select product, amount_cents, created_at from purchases where player_id = $1 order by created_at", [id]),
+                pool.query("select tag, source, created_at from tags where player_id = $1 order by created_at", [id]),
+                pool.query("select at, kind, payload from events where payload->>'player_id' = $1 order by at", [id]),
+              ]);
+        res.json({ ...p.rows[0], memberships: m.rows, purchases: pu.rows, tags: t.rows, events: ev.rows });
+  });
+}
