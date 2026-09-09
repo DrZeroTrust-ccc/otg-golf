@@ -1,6 +1,7 @@
 stripe_price_id,tier,product,tag,seat_cap
-price_REPLACE_founding,founding,,founder,40
-price_REPLACE_full,full,,member,
-price_REPLACE_weekday,weekday,,member,
-price_REPLACE_bayhour,,opening_week_bay_hour,prepaid_hour,
-price_REPLACE_league,,winter_league_s1,league_s1,48
+# first column may be a price id (price_...) or a product id (prod_...)
+prod_VDxlXjtXXaoDzv,founding,,founder,40
+prod_VEJV0A0R1kjMB3,full,,member,
+prod_VEJVeqTYUur6X1,weekday,,member,
+prod_VDxmvPMT2WqBc0,,opening_week_bay_hour,prepaid_hour,
+prod_VDyoy6pTiL0Shw,,winter_league_s1,league_s1,48
