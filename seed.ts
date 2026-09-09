@@ -3,7 +3,7 @@ import { pool, logEvent } from "./db.js";
 
 // Loads seed/price_map.csv into price_map. Safe to re-run: upserts by price id.
 async function main() {
-  const text = await readFile("seed/price_map.csv", "utf8");
+  const text = await readFile("price_map.csv", "utf8");
   const [header, ...rows] = text.trim().split(/\r?\n/);
   const cols = header.split(",");
   if (cols.join() !== "stripe_price_id,tier,product,tag,seat_cap")
