@@ -4,8 +4,8 @@ import { pool } from "./db.js";
 
 // Applies every migrations/*.sql in filename order, once each.
 async function main() {
-  const dir = path.resolve("migrations");
-  const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
+  const dir = path.resolve(".");
+  const files = (await readdir(dir)).filter((f) => /^\d{3}_.*\.sql$/.test(f)).sort();
   const client = await pool.connect();
   try {
     // 000 creates schema_migrations itself, so run it unconditionally (it's idempotent).
