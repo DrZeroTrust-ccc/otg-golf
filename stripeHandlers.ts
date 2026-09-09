@@ -73,8 +73,10 @@ export async function onCustomer(c: pg.PoolClient, cust: Stripe.Customer) {
 export async function onSubscription(c: pg.PoolClient, sub: Stripe.Subscription) {
   const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer.id;
   const playerId = await upsertPlayer(c, { stripe_customer_id: customerId });
-  const priceId = sub.items.data[0]?.price?.id;
-  const map = priceId ? (await c.query("select tier from price_map where stripe_price_id = $1", [priceId])).rows[0] : undefined;
+  const price = sub.items.data[0]?.price;
+  const priceId = price?.id;
+  const productId = typeof price?.product === "string" ? price.product : price?.product?.id ?? null;
+  const map = priceId ? (await c.query("select tier from price_map where stripe_price_id in ($1, $2)", [priceId, productId])).rows[0] : undefined;
   if (!map?.tier) {
     await logEvent(c, "membership.unmapped_price", { subscription: sub.id, price_id: priceId ?? null });
     return;
@@ -98,7 +100,7 @@ export async function onSubscription(c: pg.PoolClient, sub: Stripe.Subscription)
   if (sub.status === "canceled") await logEvent(c, "membership.canceled", { player_id: playerId, subscription: sub.id });
 }
 
-export async function onCheckoutCompleted(c: pg.PoolClient, s: Stripe.Checkout.Session, lineItemPriceId: string | null) {
+export async function onCheckoutCompleted(c: pg.PoolClient, s: Stripe.Checkout.Session, lineItemPriceId: string | null, lineItemProductId: string | null = null) {
   const customerId = typeof s.customer === "string" ? s.customer : s.customer?.id ?? null;
   const d = s.customer_details;
   const playerId = await upsertPlayer(c, {
@@ -111,8 +113,8 @@ export async function onCheckoutCompleted(c: pg.PoolClient, s: Stripe.Checkout.S
   const meta = (s.metadata ?? {}) as Record<string, string>;
   let product: string | null = meta.product ?? null;
   let tag: string | null = null;
-  if (lineItemPriceId) {
-    const m = (await c.query("select product, tag, tier from price_map where stripe_price_id = $1", [lineItemPriceId])).rows[0];
+  if (lineItemPriceId || lineItemProductId) {
+    const m = (await c.query("select product, tag, tier from price_map where stripe_price_id in ($1, $2)", [lineItemPriceId, lineItemProductId])).rows[0];
     if (m) { product = product ?? m.product ?? m.tier ?? null; tag = m.tag ?? null; }
   }
   if (product && !tag) {
