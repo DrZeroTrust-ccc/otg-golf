@@ -10,7 +10,7 @@ async function main() {
     throw new Error("price_map.csv header must be: stripe_price_id,tier,product,tag,seat_cap");
   let n = 0;
   for (const line of rows) {
-    if (!line.trim()) continue;
+    if (!line.trim() || line.startsWith("#")) continue;
     const [id, tier, product, tag, cap] = line.split(",").map((s) => s.trim());
     if (id.includes("REPLACE")) { console.log(`skip placeholder ${id}`); continue; }
     await pool.query(
