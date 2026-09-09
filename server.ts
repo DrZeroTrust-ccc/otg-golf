@@ -64,13 +64,16 @@ export async function handle(client: import("pg").PoolClient, event: Stripe.Even
     case "checkout.session.completed": {
       const sess = event.data.object as Stripe.Checkout.Session;
       let priceId: string | null = null;
+      let productId: string | null = null;
       try {
         const items = await s.checkout.sessions.listLineItems(sess.id, { limit: 1 });
-        priceId = items.data[0]?.price?.id ?? null;
+        const price = items.data[0]?.price;
+        priceId = price?.id ?? null;
+        productId = typeof price?.product === "string" ? price.product : price?.product?.id ?? null;
       } catch (e) {
         await logEvent(client, "checkout.line_items_unavailable", { checkout: sess.id, error: (e as Error).message });
       }
-      return onCheckoutCompleted(client, sess, priceId);
+      return onCheckoutCompleted(client, sess, priceId, productId);
     }
     case "invoice.payment_failed":
       return onInvoicePaymentFailed(client, event.data.object as Stripe.Invoice);
