@@ -2,11 +2,13 @@ import express from "express";
 import Stripe from "stripe";
 import { pool, logEvent } from "./db.js";
 import { onCustomer, onSubscription, onCheckoutCompleted, onInvoicePaymentFailed } from "./stripeHandlers.js";
+import { mountRoutes } from "./routes.js";
 
 const app = express();
 const stripeKey = process.env.STRIPE_SECRET_KEY;
 const whSecret = process.env.STRIPE_WEBHOOK_SECRET;
 const stripe = stripeKey ? new Stripe(stripeKey) : null;
+mountRoutes(app);
 
 app.get("/health", async (_req, res) => {
   try { await pool.query("select 1"); res.json({ ok: true }); }
