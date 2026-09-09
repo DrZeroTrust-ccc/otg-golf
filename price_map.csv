@@ -1,0 +1,6 @@
+stripe_price_id,tier,product,tag,seat_cap
+price_REPLACE_founding,founding,,founder,40
+price_REPLACE_full,full,,member,
+price_REPLACE_weekday,weekday,,member,
+price_REPLACE_bayhour,,opening_week_bay_hour,prepaid_hour,
+price_REPLACE_league,,winter_league_s1,league_s1,48

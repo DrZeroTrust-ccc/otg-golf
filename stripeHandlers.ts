@@ -1,0 +1,151 @@
+import type Stripe from "stripe";
+import type pg from "pg";
+import { logEvent } from "./db.js";
+
+// ---- helpers -------------------------------------------------------------
+
+export function normalizePhone(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  if (raw.trim().startsWith("+") && digits.length > 6) return `+${digits}`;
+  return null;
+}
+
+export function normalizeEmail(raw: string | null | undefined): string | null {
+  const e = raw?.trim().toLowerCase();
+  return e && e.includes("@") ? e : null;
+}
+
+async function addTag(c: pg.PoolClient, playerId: string, tag: string, source = "stripe") {
+  const r = await c.query(
+    `insert into tags (player_id, tag, source) values ($1, $2, $3)
+     on conflict do nothing returning tag`,
+    [playerId, tag, source]
+  );
+  if (r.rowCount) await logEvent(c, "tag.added", { player_id: playerId, tag, source });
+}
+
+// Find-or-create a player. Matching order: stripe customer id, then phone, then email.
+export async function upsertPlayer(
+  c: pg.PoolClient,
+  p: { stripe_customer_id?: string | null; name?: string | null; phone?: string | null; email?: string | null }
+): Promise<string> {
+  const phone = normalizePhone(p.phone);
+  const email = normalizeEmail(p.email);
+  const name = p.name?.trim() || null;
+  const cid = p.stripe_customer_id || null;
+
+  let row = cid ? (await c.query("select id from players where stripe_customer_id = $1", [cid])).rows[0] : undefined;
+  if (!row && phone) row = (await c.query("select id from players where phone = $1", [phone])).rows[0];
+  if (!row && email) row = (await c.query("select id from players where email = $1 order by created_at limit 1", [email])).rows[0];
+
+  if (row) {
+    // Fill blanks only; never overwrite a known value with null.
+    const u = await c.query(
+      `update players set
+         stripe_customer_id = coalesce(stripe_customer_id, $2),
+         name  = coalesce(nullif($3,''), name),
+         phone = coalesce(phone, $4),
+         email = coalesce(email, $5)
+       where id = $1
+       returning (xmax = 0) as inserted`,
+      [row.id, cid, name, phone, email]
+    );
+    await logEvent(c, "player.updated", { player_id: row.id, stripe_customer_id: cid, phone, email });
+    return row.id;
+  }
+  const ins = await c.query(
+    `insert into players (stripe_customer_id, name, phone, email) values ($1,$2,$3,$4) returning id`,
+    [cid, name, phone, email]
+  );
+  await logEvent(c, "player.created", { player_id: ins.rows[0].id, stripe_customer_id: cid, phone, email });
+  return ins.rows[0].id;
+}
+
+// ---- event handlers ------------------------------------------------------
+
+export async function onCustomer(c: pg.PoolClient, cust: Stripe.Customer) {
+  await upsertPlayer(c, { stripe_customer_id: cust.id, name: cust.name, phone: cust.phone, email: cust.email });
+}
+
+export async function onSubscription(c: pg.PoolClient, sub: Stripe.Subscription) {
+  const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer.id;
+  const playerId = await upsertPlayer(c, { stripe_customer_id: customerId });
+  const priceId = sub.items.data[0]?.price?.id;
+  const map = priceId ? (await c.query("select tier from price_map where stripe_price_id = $1", [priceId])).rows[0] : undefined;
+  if (!map?.tier) {
+    await logEvent(c, "membership.unmapped_price", { subscription: sub.id, price_id: priceId ?? null });
+    return;
+  }
+  const ts = (n: number | null | undefined) => (n ? new Date(n * 1000) : null);
+  // Stripe 2025+ moved current_period_end to the item level; fall back to the sub for older API versions.
+  const item = sub.items.data[0] as unknown as { current_period_end?: number };
+  const periodEnd = ts(item?.current_period_end ?? (sub as unknown as { current_period_end?: number }).current_period_end);
+  await c.query(
+    `insert into memberships (player_id, stripe_subscription_id, tier, status, current_period_end, trial_end, updated_at)
+     values ($1,$2,$3,$4,$5,$6, now())
+     on conflict (stripe_subscription_id) do update
+       set player_id = excluded.player_id, tier = excluded.tier, status = excluded.status,
+           current_period_end = excluded.current_period_end, trial_end = excluded.trial_end, updated_at = now()`,
+    [playerId, sub.id, map.tier, sub.status, periodEnd, ts(sub.trial_end)]
+  );
+  await logEvent(c, "membership.upserted", { player_id: playerId, subscription: sub.id, tier: map.tier, status: sub.status });
+  await addTag(c, playerId, "member");
+  if (map.tier === "founding") await addTag(c, playerId, "founder");
+  if (map.tier === "corporate") await addTag(c, playerId, "corporate");
+  if (sub.status === "canceled") await logEvent(c, "membership.canceled", { player_id: playerId, subscription: sub.id });
+}
+
+export async function onCheckoutCompleted(c: pg.PoolClient, s: Stripe.Checkout.Session, lineItemPriceId: string | null) {
+  const customerId = typeof s.customer === "string" ? s.customer : s.customer?.id ?? null;
+  const d = s.customer_details;
+  const playerId = await upsertPlayer(c, {
+    stripe_customer_id: customerId,
+    name: d?.name ?? null,
+    phone: d?.phone ?? null,
+    email: d?.email ?? s.customer_email ?? null,
+  });
+
+  const meta = (s.metadata ?? {}) as Record<string, string>;
+  let product: string | null = meta.product ?? null;
+  let tag: string | null = null;
+  if (lineItemPriceId) {
+    const m = (await c.query("select product, tag, tier from price_map where stripe_price_id = $1", [lineItemPriceId])).rows[0];
+    if (m) { product = product ?? m.product ?? m.tier ?? null; tag = m.tag ?? null; }
+  }
+  if (product && !tag) {
+    // Line items may be unavailable; resolve the tag from the product name instead.
+    const m = (await c.query("select tag from price_map where product = $1 or tier = $1 limit 1", [product])).rows[0];
+    tag = m?.tag ?? null;
+  }
+  if (!product) {
+    await logEvent(c, "purchase.unmapped", { checkout: s.id, price_id: lineItemPriceId, metadata: meta });
+    product = "unknown";
+  }
+  if (s.mode === "subscription") {
+    // Subscription checkouts are recorded via the subscription events; only log here.
+    await logEvent(c, "checkout.subscription", { checkout: s.id, player_id: playerId, product });
+    return;
+  }
+  const r = await c.query(
+    `insert into purchases (player_id, stripe_checkout_session_id, product, amount_cents, metadata)
+     values ($1,$2,$3,$4,$5) on conflict (stripe_checkout_session_id) do nothing returning id`,
+    [playerId, s.id, product, s.amount_total ?? 0, meta]
+  );
+  if (r.rowCount) await logEvent(c, "purchase.created", { player_id: playerId, checkout: s.id, product, amount_cents: s.amount_total ?? 0 });
+  if (tag) await addTag(c, playerId, tag);
+}
+
+export async function onInvoicePaymentFailed(c: pg.PoolClient, inv: Stripe.Invoice) {
+  const subField = (inv as unknown as { subscription?: string | { id: string } | null }).subscription
+    ?? (inv as unknown as { parent?: { subscription_details?: { subscription?: string } } }).parent?.subscription_details?.subscription;
+  const subId = typeof subField === "string" ? subField : subField?.id;
+  if (!subId) return;
+  const r = await c.query(
+    `update memberships set status = 'past_due', updated_at = now() where stripe_subscription_id = $1 returning player_id`,
+    [subId]
+  );
+  if (r.rowCount) await logEvent(c, "membership.payment_failed", { player_id: r.rows[0].player_id, subscription: subId, invoice: inv.id });
+}
