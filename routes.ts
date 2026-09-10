@@ -83,6 +83,7 @@ export function mountRoutes(app: Express) {
                     const openingText = opening.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "America/New_York" });
                     const session = await stripe.checkout.sessions.create({
                                 mode: "setup",
+                        currency: "usd",
                                 customer_creation: "always",
                                 ...(email ? { customer_email: email } : {}),
                                 metadata: { product: "founding", name, phone },
