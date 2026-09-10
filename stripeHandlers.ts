@@ -151,3 +151,63 @@ export async function onInvoicePaymentFailed(c: pg.PoolClient, inv: Stripe.Invoi
   );
   if (r.rowCount) await logEvent(c, "membership.payment_failed", { player_id: r.rows[0].player_id, subscription: subId, invoice: inv.id });
 }
+
+// ---- founding seat: card saved now, billed on opening day -----------------
+
+export const FOUNDING_CAP_DEFAULT = 40;
+
+export async function foundingSeatsTaken(c: pg.PoolClient | pg.Pool): Promise<{ taken: number; cap: number }> {
+    const r = await c.query(
+          `select (select count(*)::int from memberships where tier = 'founding' and status in ('trialing','active','past_due')) as taken,
+                      coalesce((select seat_cap from price_map where tier = 'founding' limit 1), $1) as cap`,
+          [FOUNDING_CAP_DEFAULT]
+        );
+    return { taken: r.rows[0].taken, cap: r.rows[0].cap };
+}
+
+// Narrow, test-friendly view of the Stripe client (the real Stripe instance satisfies it).
+type StripeForSetup = {
+    prices: { list: (p: { product: string; active: boolean; limit: number }) => Promise<{ data: { id: string; recurring: unknown }[] }> };
+    customers: { update: (id: string, p: { invoice_settings: { default_payment_method: string } }) => Promise<unknown> };
+    subscriptions: { create: (p: any) => Promise<{ id: string }> };
+};
+
+// Called for checkout.session.completed with mode = "setup". Creates the founding subscription
+// ourselves so billing starts on a fixed date (OPENING_DAY) regardless of signup date.
+export async function onSetupCompleted(c: pg.PoolClient, s: Stripe.Checkout.Session, stripe: StripeForSetup) {
+    const customerId = typeof s.customer === "string" ? s.customer : s.customer?.id ?? null;
+    const d = s.customer_details;
+    const playerId = await upsertPlayer(c, { stripe_customer_id: customerId, name: d?.name ?? null, phone: d?.phone ?? null, email: d?.email ?? null });
+    const meta = (s.metadata ?? {}) as Record<string, string>;
+    if (meta.product !== "founding" || !customerId) {
+          await logEvent(c, "setup.ignored", { checkout: s.id, player_id: playerId, metadata: meta });
+          return;
+    }
+    const { taken, cap } = await foundingSeatsTaken(c);
+    if (taken >= cap) {
+          await c.query("insert into tags (player_id, tag, source) values ($1,'waitlist','stripe') on conflict do nothing", [playerId]);
+          await logEvent(c, "founding.cap_reached", { checkout: s.id, player_id: playerId, taken, cap });
+          return;
+    }
+    const productId = process.env.FOUNDING_PRODUCT_ID ?? (await c.query("select stripe_price_id from price_map where tier = 'founding' limit 1")).rows[0]?.stripe_price_id;
+    if (!productId) throw new Error("founding product id not configured");
+    const prices = await stripe.prices.list({ product: productId, active: true, limit: 10 });
+    const price = prices.data.find((p) => p.recurring);
+    if (!price) throw new Error(`no active recurring price for ${productId}`);
+
+  const si = s.setup_intent as unknown as { payment_method?: string | { id: string } } | string | null;
+    const pm = typeof si === "string" ? null : (typeof si?.payment_method === "string" ? si.payment_method : si?.payment_method?.id ?? null);
+    if (pm) await stripe.customers.update(customerId, { invoice_settings: { default_payment_method: pm } });
+
+  const opening = Math.floor(new Date(process.env.OPENING_DAY ?? "2026-11-09T14:00:00Z").getTime() / 1000);
+    const now = Math.floor(Date.now() / 1000);
+    const params: Record<string, unknown> = {
+          customer: customerId,
+          items: [{ price: price.id }],
+          metadata: { product: "founding", checkout: s.id },
+          ...(pm ? { default_payment_method: pm } : {}),
+          ...(opening > now + 60 ? { trial_end: opening } : {}),
+    };
+    const sub = await stripe.subscriptions.create(params);
+    await logEvent(c, "founding.subscription_created", { player_id: playerId, subscription: sub.id, bills_on: opening > now ? new Date(opening * 1000).toISOString() : "now", seat: taken + 1, cap });
+}
