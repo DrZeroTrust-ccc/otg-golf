@@ -1,7 +1,7 @@
 import express from "express";
 import Stripe from "stripe";
 import { pool, logEvent } from "./db.js";
-import { onCustomer, onSubscription, onCheckoutCompleted, onInvoicePaymentFailed } from "./stripeHandlers.js";
+import { onCustomer, onSubscription, onCheckoutCompleted, onInvoicePaymentFailed, onSetupCompleted } from "./stripeHandlers.js";
 import { mountRoutes } from "./routes.js";
 
 const app = express();
@@ -63,6 +63,10 @@ export async function handle(client: import("pg").PoolClient, event: Stripe.Even
       return onSubscription(client, event.data.object as Stripe.Subscription);
     case "checkout.session.completed": {
       const sess = event.data.object as Stripe.Checkout.Session;
+      if (sess.mode === "setup") {
+        const full = await s.checkout.sessions.retrieve(sess.id, { expand: ["setup_intent"] });
+        return onSetupCompleted(client, full, s);
+      }
       let priceId: string | null = null;
       let productId: string | null = null;
       try {
