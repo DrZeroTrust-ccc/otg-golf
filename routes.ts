@@ -1,5 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
+import Stripe from "stripe";
 import { pool } from "./db.js";
+import { foundingSeatsTaken } from "./stripeHandlers.js";
 
 const SITE_ORIGIN = process.env.SITE_ORIGIN ?? "https://otg.golf";
 
@@ -61,4 +63,28 @@ export function mountRoutes(app: Express) {
               ]);
         res.json({ ...p.rows[0], memberships: m.rows, purchases: pu.rows, tags: t.rows, events: ev.rows });
   });
+
+    // Founding seat: Stripe Checkout in setup mode (card saved, nothing charged). The webhook creates
+    // the subscription with billing anchored to OPENING_DAY. Cap enforced here and again in the webhook.
+    app.get("/checkout/founding", async (_req, res) => {
+        const site = process.env.SITE_URL ?? "https://otg.golf";
+        const key = process.env.STRIPE_SECRET_KEY;
+        if (!key) return res.status(500).send("stripe not configured");
+        const { taken, cap } = await foundingSeatsTaken(pool);
+        if (taken >= cap) return res.redirect(303, `${site}/?founding=full`);
+        const stripe = new Stripe(key);
+        const opening = new Date(process.env.OPENING_DAY ?? "2026-11-09T14:00:00Z");
+        const openingText = opening.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "America/New_York" });
+        const session = await stripe.checkout.sessions.create({
+            mode: "setup",
+            customer_creation: "always",
+            phone_number_collection: { enabled: true },
+            metadata: { product: "founding" },
+            custom_text: { submit: { message: `Your card is saved today and nothing is charged now. $249/month is billed starting opening day, ${openingText}, and your founding rate is locked for life.` } },
+            success_url: `${site}/founding-confirmed?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${site}/`,
+        });
+        await pool.query("insert into events (kind, payload) values ($1,$2)", ["founding.checkout_started", { checkout: session.id, taken, cap }]);
+        res.redirect(303, session.url as string);
+    });
 }
