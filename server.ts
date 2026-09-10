@@ -5,6 +5,8 @@ import { onCustomer, onSubscription, onCheckoutCompleted, onInvoicePaymentFailed
 import { mountRoutes } from "./routes.js";
 
 const app = express();
+// Never let a stray promise rejection take the service down; log it and keep serving.
+process.on("unhandledRejection", (e) => console.error("unhandledRejection:", e));
 const stripeKey = process.env.STRIPE_SECRET_KEY;
 const whSecret = process.env.STRIPE_WEBHOOK_SECRET;
 const stripe = stripeKey ? new Stripe(stripeKey) : null;
