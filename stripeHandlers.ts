@@ -177,8 +177,8 @@ type StripeForSetup = {
 export async function onSetupCompleted(c: pg.PoolClient, s: Stripe.Checkout.Session, stripe: StripeForSetup) {
     const customerId = typeof s.customer === "string" ? s.customer : s.customer?.id ?? null;
     const d = s.customer_details;
-    const playerId = await upsertPlayer(c, { stripe_customer_id: customerId, name: d?.name ?? null, phone: d?.phone ?? null, email: d?.email ?? null });
     const meta = (s.metadata ?? {}) as Record<string, string>;
+    const playerId = await upsertPlayer(c, { stripe_customer_id: customerId, name: d?.name ?? meta.name ?? null, phone: d?.phone ?? meta.phone ?? null, email: d?.email ?? null });
     if (meta.product !== "founding" || !customerId) {
           await logEvent(c, "setup.ignored", { checkout: s.id, player_id: playerId, metadata: meta });
           return;
