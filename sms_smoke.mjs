@@ -16,6 +16,7 @@ let fails = 0;
 const check = (name, ok, extra = "") => { console.log(`${ok ? "PASS" : "FAIL"}  ${name} ${extra}`); if (!ok) fails++; };
 
 await c.query("delete from sms_messages where phone = $1", [phone]);
+for (const t of ["tags", "purchases", "memberships"]) await c.query(`delete from ${t} where player_id in (select id from players where phone = $1)`, [phone]);
 await c.query("delete from players where phone = $1", [phone]);
 await c.query("insert into players (name, phone) values ('Smoke Tester', $1)", [phone]);
 
@@ -23,7 +24,7 @@ check("dormant when unconfigured", smsConfigured === false);
 let r = await sendSms("540-555-0199", "hello");
 check("send skipped while unconfigured", r.ok === false && r.status === "skipped", JSON.stringify(r));
 
-// Inbound STOP: opt-out recorded, no reply
+// Inbound STOP → opt-out recorded, no reply
 let reply = await onInboundSms({ From: phone, Body: "STOP", MessageSid: "SMtest1" });
 let p = (await c.query("select sms_opt_out, sms_opt_out_at from players where phone=$1", [phone])).rows[0];
 check("STOP sets opt-out", p.sms_opt_out === true && p.sms_opt_out_at && reply === null);
@@ -31,7 +32,7 @@ check("STOP sets opt-out", p.sms_opt_out === true && p.sms_opt_out_at && reply =
 r = await sendSms(phone, "should not send");
 check("send refused after opt-out", r.status === "skipped" && r.error === "opted out");
 
-// Inbound START: cleared, opt-in reply
+// Inbound START → cleared, opt-in reply
 reply = await onInboundSms({ From: phone, Body: "start", MessageSid: "SMtest2" });
 p = (await c.query("select sms_opt_out from players where phone=$1", [phone])).rows[0];
 check("START clears opt-out and replies", p.sms_opt_out === false && reply === START_REPLY);

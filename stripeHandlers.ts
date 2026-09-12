@@ -1,6 +1,7 @@
 import type Stripe from "stripe";
 import type pg from "pg";
 import { logEvent } from "./db.js";
+import { applyPartner } from "./partners.js";
 
 // ---- helpers -------------------------------------------------------------
 
@@ -95,6 +96,7 @@ export async function onSubscription(c: pg.PoolClient, sub: Stripe.Subscription)
   );
   await logEvent(c, "membership.upserted", { player_id: playerId, subscription: sub.id, tier: map.tier, status: sub.status });
   await addTag(c, playerId, "member");
+  if (sub.metadata?.partner) await applyPartner(c, playerId, sub.metadata.partner, "subscription");
   if (map.tier === "founding") await addTag(c, playerId, "founder");
   if (map.tier === "corporate") await addTag(c, playerId, "corporate");
   if (sub.status === "canceled") await logEvent(c, "membership.canceled", { player_id: playerId, subscription: sub.id });
@@ -111,6 +113,7 @@ export async function onCheckoutCompleted(c: pg.PoolClient, s: Stripe.Checkout.S
   });
 
   const meta = (s.metadata ?? {}) as Record<string, string>;
+  if (meta.partner) await applyPartner(c, playerId, meta.partner, "checkout");
   let product: string | null = meta.product ?? null;
   let tag: string | null = null;
   if (lineItemPriceId || lineItemProductId) {
@@ -179,6 +182,7 @@ export async function onSetupCompleted(c: pg.PoolClient, s: Stripe.Checkout.Sess
     const d = s.customer_details;
     const meta = (s.metadata ?? {}) as Record<string, string>;
     const playerId = await upsertPlayer(c, { stripe_customer_id: customerId, name: d?.name ?? meta.name ?? null, phone: d?.phone ?? meta.phone ?? null, email: d?.email ?? null });
+    if (meta.partner) await applyPartner(c, playerId, meta.partner, "founding");
     if (meta.product !== "founding" || !customerId) {
           await logEvent(c, "setup.ignored", { checkout: s.id, player_id: playerId, metadata: meta });
           return;
@@ -204,7 +208,7 @@ export async function onSetupCompleted(c: pg.PoolClient, s: Stripe.Checkout.Sess
     const params: Record<string, unknown> = {
           customer: customerId,
           items: [{ price: price.id }],
-          metadata: { product: "founding", checkout: s.id },
+          metadata: { product: "founding", checkout: s.id, ...(meta.partner ? { partner: meta.partner } : {}) },
           ...(pm ? { default_payment_method: pm } : {}),
           ...(opening > now + 60 ? { trial_end: opening } : {}),
     };

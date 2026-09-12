@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
+import Stripe from "stripe";
 import { pool, logEvent } from "./db.js";
+import { seedPartners, ensureStripeOffers } from "./partners.js";
 
 // Loads seed/price_map.csv into price_map. Safe to re-run: upserts by price id.
 async function main() {
@@ -24,6 +26,12 @@ async function main() {
     n++;
   }
   console.log(`price_map: ${n} rows upserted`);
+  console.log(`partners: ${await seedPartners(pool)} rows upserted`);
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (key) {
+    try { for (const line of await ensureStripeOffers(new Stripe(key), pool)) console.log(`stripe offers: ${line}`); }
+    catch (e) { console.error("stripe offers: skipped —", (e as Error).message); }
+  } else console.log("stripe offers: skipped (no STRIPE_SECRET_KEY)");
   await pool.end();
 }
 main().catch((e) => { console.error(e); process.exit(1); });
