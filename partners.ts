@@ -6,11 +6,11 @@ import { logEvent } from "./db.js";
 // ---- Offer definitions (the only place these numbers live) -------------------------
 export const OFFERS = {
   // Partner golfers: $50/mo off Full for 3 months ($99 instead of $149); $20/mo off Weekday for 3 months.
-  partnerFullMonthly:    { coupon: "PARTNER-FULL-50X3",   amount_off: 5000,  duration: "repeating" as const, months: 3, name: "Partner course: $50 off Full for 3 months" },
-  partnerWeekdayMonthly: { coupon: "PARTNER-WEEKDAY-20X3", amount_off: 2000,  duration: "repeating" as const, months: 3, name: "Partner course: $20 off Weekday for 3 months" },
+  partnerFullMonthly:    { coupon: "PARTNER-FULL-50X3",   amount_off: 5000,  duration: "repeating" as const, months: 3, name: "Partner: $50 off Full x3 months" },
+  partnerWeekdayMonthly: { coupon: "PARTNER-WEEKDAY-20X3", amount_off: 2000,  duration: "repeating" as const, months: 3, name: "Partner: $20 off Weekday x3 months" },
   // Annual Full: $1,490/yr for everyone (two months free); partner code takes another $150 off.
   fullAnnual:            { lookup_key: "full_annual", unit_amount: 149000, interval: "year" as const },
-  partnerFullAnnual:     { coupon: "PARTNER-ANNUAL-150", amount_off: 15000, duration: "once" as const, months: 0, name: "Partner course: $150 off annual Full" },
+  partnerFullAnnual:     { coupon: "PARTNER-ANNUAL-150", amount_off: 15000, duration: "once" as const, months: 0, name: "Partner: $150 off annual Full" },
   // Partner pros: coaching bay hour at a flat $30.
   coachingHour:          { lookup_key: "coaching_bay_hour", unit_amount: 3000, product_name: "Coaching Bay Hour (Partner Pro)", product_key: "coaching_bay_hour" },
 };
@@ -44,16 +44,16 @@ export async function applyPartner(c: pg.PoolClient, playerId: string, slugRaw: 
 
 export async function partnerCounts(db: pg.Pool | pg.PoolClient) {
   const q = await db.query(`
-    select p.slug, p.code, p.course, p.pro_name,
-      count(distinct pl.id) as players,
-      count(distinct m.id) filter (where m.status in ('trialing','active','past_due')) as members,
-      count(distinct pu.id) filter (where pu.product = 'coaching_bay_hour') as coaching_hours
-    from partners p
-    left join players pl on pl.partner_slug = p.slug
-    left join memberships m on m.player_id = pl.id
-    left join purchases pu on pu.player_id = pl.id
-    where p.active
-    group by p.slug, p.code, p.course, p.pro_name order by p.course`);
+  select p.slug, p.code, p.course, p.pro_name,
+  count(distinct pl.id) as players,
+  count(distinct m.id) filter (where m.status in ('trialing','active','past_due')) as members,
+  count(distinct pu.id) filter (where pu.product = 'coaching_bay_hour') as coaching_hours
+  from partners p
+  left join players pl on pl.partner_slug = p.slug
+  left join memberships m on m.player_id = pl.id
+  left join purchases pu on pu.player_id = pl.id
+  where p.active
+  group by p.slug, p.code, p.course, p.pro_name order by p.course`);
   return q.rows;
 }
 
@@ -69,11 +69,11 @@ export async function seedPartners(db: pg.Pool): Promise<number> {
     const [slug, code, course, contact_name, contact_email, pro_name] = line.split(",").map((s) => s.trim());
     await db.query(
       `insert into partners (slug, code, course, contact_name, contact_email, pro_name)
-       values ($1,$2,$3,nullif($4,''),nullif($5,''),nullif($6,''))
-       on conflict (slug) do update set code = excluded.code, course = excluded.course,
-         contact_name = excluded.contact_name, contact_email = excluded.contact_email, pro_name = excluded.pro_name`,
+      values ($1,$2,$3,nullif($4,''),nullif($5,''),nullif($6,''))
+      on conflict (slug) do update set code = excluded.code, course = excluded.course,
+      contact_name = excluded.contact_name, contact_email = excluded.contact_email, pro_name = excluded.pro_name`,
       [slug, code, course, contact_name, contact_email, pro_name]
-    );
+      );
     n++;
   }
   return n;
@@ -84,26 +84,26 @@ export async function ensureStripeOffers(stripe: Stripe, db: pg.Pool): Promise<s
   const log: string[] = [];
   const fullProduct = (await db.query("select stripe_price_id from price_map where tier = 'full' limit 1")).rows[0]?.stripe_price_id as string | undefined;
 
-  for (const o of [OFFERS.partnerFullMonthly, OFFERS.partnerWeekdayMonthly, OFFERS.partnerFullAnnual]) {
-    const existing = await stripe.coupons.retrieve(o.coupon).catch(() => null);
-    if (existing) { log.push(`coupon ${o.coupon}: exists`); continue; }
-    await stripe.coupons.create({
-      id: o.coupon, name: o.name, currency: "usd", amount_off: o.amount_off, duration: o.duration,
-      ...(o.duration === "repeating" ? { duration_in_months: o.months } : {}),
-    });
-    log.push(`coupon ${o.coupon}: created`);
+for (const o of [OFFERS.partnerFullMonthly, OFFERS.partnerWeekdayMonthly, OFFERS.partnerFullAnnual]) {
+  const existing = await stripe.coupons.retrieve(o.coupon).catch(() => null);
+  if (existing) { log.push(`coupon ${o.coupon}: exists`); continue; }
+  await stripe.coupons.create({
+    id: o.coupon, name: o.name, currency: "usd", amount_off: o.amount_off, duration: o.duration,
+    ...(o.duration === "repeating" ? { duration_in_months: o.months } : {}),
+  });
+  log.push(`coupon ${o.coupon}: created`);
+}
+
+if (fullProduct) {
+  const found = await stripe.prices.list({ lookup_keys: [OFFERS.fullAnnual.lookup_key], limit: 1 });
+  if (found.data.length) log.push("price full_annual: exists");
+  else {
+    await stripe.prices.create({ product: fullProduct, currency: "usd", unit_amount: OFFERS.fullAnnual.unit_amount, recurring: { interval: "year" }, lookup_key: OFFERS.fullAnnual.lookup_key, nickname: "Full membership, annual" });
+    log.push("price full_annual: created");
   }
+} else log.push("price full_annual: skipped (no 'full' product in price_map)");
 
-  if (fullProduct) {
-    const found = await stripe.prices.list({ lookup_keys: [OFFERS.fullAnnual.lookup_key], limit: 1 });
-    if (found.data.length) log.push("price full_annual: exists");
-    else {
-      await stripe.prices.create({ product: fullProduct, currency: "usd", unit_amount: OFFERS.fullAnnual.unit_amount, recurring: { interval: "year" }, lookup_key: OFFERS.fullAnnual.lookup_key, nickname: "Full membership, annual" });
-      log.push("price full_annual: created");
-    }
-  } else log.push("price full_annual: skipped (no 'full' product in price_map)");
-
-  const coach = await stripe.prices.list({ lookup_keys: [OFFERS.coachingHour.lookup_key], limit: 1, expand: ["data.product"] });
+const coach = await stripe.prices.list({ lookup_keys: [OFFERS.coachingHour.lookup_key], limit: 1, expand: ["data.product"] });
   let coachProductId: string;
   if (coach.data.length) {
     const prod = coach.data[0].product;
@@ -117,9 +117,9 @@ export async function ensureStripeOffers(stripe: Stripe, db: pg.Pool): Promise<s
   }
   await db.query(
     `insert into price_map (stripe_price_id, product, tag) values ($1, 'coaching_bay_hour', 'partner_pro')
-     on conflict (stripe_price_id) do update set product = excluded.product, tag = excluded.tag`,
+    on conflict (stripe_price_id) do update set product = excluded.product, tag = excluded.tag`,
     [coachProductId]
-  );
+    );
   return log;
 }
 
