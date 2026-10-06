@@ -4,7 +4,7 @@ import { pool, logEvent } from "./db.js";
 import { onCustomer, onSubscription, onCheckoutCompleted, onInvoicePaymentFailed, onSetupCompleted } from "./stripeHandlers.js";
 import { mountRoutes } from "./routes.js";
 import { mountInquiries, nudgeStaleInquiries } from "./inquiries.js";
-import { syncMemberNumbersToStripe } from "./members.js";
+import { syncMemberNumbersToStripe, queueMemberNumberNotices } from "./members.js";
 import { dispatchOutbox, kickOutbox } from "./notify.js";
 
 const app = express();
@@ -99,10 +99,11 @@ const port = Number(process.env.PORT ?? 3000);
 if (process.env.NODE_ENV !== "test") {
   app.listen(port, () => console.log(`otg-ops listening on ${port}`));
   // Once a minute: retry anything unsent, re-alert on event inquiries nobody has answered,
-  // and copy new member numbers onto their Stripe customers.
+  // email member numbers to members whose welcome didn't carry one, and copy numbers onto Stripe.
   setInterval(() => {
     void (async () => {
       try { await nudgeStaleInquiries(); } catch (e) { console.error("nudge failed:", (e as Error).message); }
+      try { await queueMemberNumberNotices(); } catch (e) { console.error("member number notices failed:", (e as Error).message); }
       if (stripe) try { await syncMemberNumbersToStripe(stripe); } catch (e) { console.error("member number sync failed:", (e as Error).message); }
       await dispatchOutbox();
     })();
