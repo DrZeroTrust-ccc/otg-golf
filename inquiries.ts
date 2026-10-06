@@ -11,7 +11,12 @@ import { inquiryReply, ownerInquiry, ownerInquiryNudge } from "./templates.js";
 
 const SITE = () => process.env.SITE_URL ?? "https://otg.golf";
 const BASE = () => process.env.PUBLIC_BASE_URL ?? "https://otg-ops.onrender.com";
-const ALLOWED_ORIGINS = () => new Set([process.env.SITE_ORIGIN ?? "https://otg.golf", "https://www.otg.golf"]);
+// The site's own origins are always allowed; SITE_ORIGIN adds to them rather than replacing them.
+// Trimmed and without a trailing slash, since a browser's Origin header never has either.
+const ALLOWED_ORIGINS = () => {
+  const extra = process.env.SITE_ORIGIN?.trim().replace(/\/+$/, "");
+  return new Set(["https://otg.golf", "https://www.otg.golf", ...(extra ? [extra] : [])]);
+};
 
 function cors(req: Request, res: Response) {
   const origin = req.header("Origin");

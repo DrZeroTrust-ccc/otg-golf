@@ -68,6 +68,11 @@ const inq = await fetch(`${base}/inquiries`, { method: "POST", headers: { "conte
   body: JSON.stringify({ name: "Eve Planner", email: `eve.${run}@example.com`, phone: "540-555-0177", package: "Half-Club", date: "Dec 12", guests: "12", message: "Holiday party" }) });
 check("inquiry accepted", inq.status === 200 && (await inq.json()).ok === true);
 check("inquiry CORS header for the site", inq.headers.get("access-control-allow-origin") === "https://otg.golf");
+// The browser's preflight from the live site must pass even when SITE_ORIGIN is set to something else.
+const pre = await fetch(`${base}/inquiries`, { method: "OPTIONS", headers: { origin: "https://otg.golf", "access-control-request-method": "POST", "access-control-request-headers": "content-type" } });
+check("preflight from otg.golf allowed", pre.status === 204 && pre.headers.get("access-control-allow-origin") === "https://otg.golf");
+const other = await fetch(`${base}/inquiries`, { method: "OPTIONS", headers: { origin: "https://evil.example", "access-control-request-method": "POST" } });
+check("preflight from another site gets no CORS header", other.headers.get("access-control-allow-origin") === null);
 const bot = await fetch(`${base}/inquiries`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" },
   body: JSON.stringify({ name: "Bot", email: `bot.${run}@example.com`, company_website: "http://spam" }) });
 check("honeypot submission silently dropped", bot.status === 200 && (await q("select count(*)::int n from inquiries where email=$1", [`bot.${run}@example.com`]))[0].n === 0);
