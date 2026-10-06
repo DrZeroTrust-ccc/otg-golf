@@ -3,14 +3,18 @@ import Stripe from "stripe";
 import { pool, logEvent } from "./db.js";
 import { onCustomer, onSubscription, onCheckoutCompleted, onInvoicePaymentFailed, onSetupCompleted } from "./stripeHandlers.js";
 import { mountRoutes } from "./routes.js";
+import { mountInquiries, nudgeStaleInquiries } from "./inquiries.js";
+import { dispatchOutbox, kickOutbox } from "./notify.js";
 
 const app = express();
 // Never let a stray promise rejection take the service down; log it and keep serving.
 process.on("unhandledRejection", (e) => console.error("unhandledRejection:", e));
-const stripeKey = process.env.STRIPE_SECRET_KEY;
-const whSecret = process.env.STRIPE_WEBHOOK_SECRET;
+// Trimmed: a stray space or newline pasted into Render must never break Stripe again.
+const stripeKey = process.env.STRIPE_SECRET_KEY?.trim();
+const whSecret = process.env.STRIPE_WEBHOOK_SECRET?.trim();
 const stripe = stripeKey ? new Stripe(stripeKey) : null;
 mountRoutes(app);
+mountInquiries(app);
 
 app.get("/health", async (_req, res) => {
   try { await pool.query("select 1"); res.json({ ok: true }); }
@@ -40,6 +44,8 @@ app.post("/webhooks/stripe", express.raw({ type: "application/json" }), async (r
     await handle(client, event, stripe);
     await client.query("update stripe_events set processed_at = now() where id = $1", [event.id]);
     await client.query("commit");
+    kickOutbox(); // send anything the handlers queued, without delaying Stripe's response
+    setTimeout(kickOutbox, 25_000).unref(); // and pick up the messages that are held back briefly
     return res.status(200).send("ok");
   } catch (e) {
     await client.query("rollback").catch(() => {});
@@ -91,5 +97,12 @@ export async function handle(client: import("pg").PoolClient, event: Stripe.Even
 const port = Number(process.env.PORT ?? 3000);
 if (process.env.NODE_ENV !== "test") {
   app.listen(port, () => console.log(`otg-ops listening on ${port}`));
+  // Once a minute: retry anything unsent, and re-alert on event inquiries nobody has answered.
+  setInterval(() => {
+    void (async () => {
+      try { await nudgeStaleInquiries(); } catch (e) { console.error("nudge failed:", (e as Error).message); }
+      await dispatchOutbox();
+    })();
+  }, 60_000).unref();
 }
 export { app };

@@ -2,6 +2,18 @@ import type Stripe from "stripe";
 import type pg from "pg";
 import { logEvent } from "./db.js";
 import { applyPartner } from "./partners.js";
+import { notifyCustomer, notifyOwner } from "./notify.js";
+import { memberWelcome, purchaseConfirmation, ownerNewMember, ownerNewPurchase, ownerPaymentFailed, ownerWaitlist } from "./templates.js";
+
+// Messages are only queued for things that just happened. A backfill or a replay of old Stripe
+// events must never send a "welcome" to someone who joined weeks ago.
+const FRESH_SECONDS = 48 * 3600;
+const isFresh = (createdUnix: number | null | undefined) =>
+  typeof createdUnix === "number" && Date.now() / 1000 - createdUnix < FRESH_SECONDS;
+
+async function contactOf(c: pg.PoolClient, playerId: string): Promise<{ name: string | null; email: string | null; phone: string | null }> {
+  return (await c.query("select name, email, phone from players where id = $1", [playerId])).rows[0] ?? { name: null, email: null, phone: null };
+}
 
 // ---- helpers -------------------------------------------------------------
 
@@ -31,7 +43,8 @@ async function addTag(c: pg.PoolClient, playerId: string, tag: string, source = 
 // Find-or-create a player. Matching order: stripe customer id, then phone, then email.
 export async function upsertPlayer(
   c: pg.PoolClient,
-  p: { stripe_customer_id?: string | null; name?: string | null; phone?: string | null; email?: string | null }
+  p: { stripe_customer_id?: string | null; name?: string | null; phone?: string | null; email?: string | null },
+  _retried = false
 ): Promise<string> {
   const phone = normalizePhone(p.phone);
   const email = normalizeEmail(p.email);
@@ -57,12 +70,23 @@ export async function upsertPlayer(
     await logEvent(c, "player.updated", { player_id: row.id, stripe_customer_id: cid, phone, email });
     return row.id;
   }
-  const ins = await c.query(
-    `insert into players (stripe_customer_id, name, phone, email) values ($1,$2,$3,$4) returning id`,
-    [cid, name, phone, email]
-  );
-  await logEvent(c, "player.created", { player_id: ins.rows[0].id, stripe_customer_id: cid, phone, email });
-  return ins.rows[0].id;
+  // Two Stripe events for the same new customer can arrive in the same instant. If the other one
+  // creates the player first, the insert hits a unique constraint; undo just the insert and
+  // go round again, which now finds the row and takes the update path.
+  await c.query("savepoint upsert_player");
+  try {
+    const ins = await c.query(
+      `insert into players (stripe_customer_id, name, phone, email) values ($1,$2,$3,$4) returning id`,
+      [cid, name, phone, email]
+    );
+    await c.query("release savepoint upsert_player");
+    await logEvent(c, "player.created", { player_id: ins.rows[0].id, stripe_customer_id: cid, phone, email });
+    return ins.rows[0].id;
+  } catch (e) {
+    await c.query("rollback to savepoint upsert_player");
+    if ((e as { code?: string }).code === "23505" && !_retried) return upsertPlayer(c, p, true);
+    throw e;
+  }
 }
 
 // ---- event handlers ------------------------------------------------------
@@ -86,14 +110,24 @@ export async function onSubscription(c: pg.PoolClient, sub: Stripe.Subscription)
   // Stripe 2025+ moved current_period_end to the item level; fall back to the sub for older API versions.
   const item = sub.items.data[0] as unknown as { current_period_end?: number };
   const periodEnd = ts(item?.current_period_end ?? (sub as unknown as { current_period_end?: number }).current_period_end);
-  await c.query(
+  const up = await c.query(
     `insert into memberships (player_id, stripe_subscription_id, tier, status, current_period_end, trial_end, updated_at)
      values ($1,$2,$3,$4,$5,$6, now())
      on conflict (stripe_subscription_id) do update
        set player_id = excluded.player_id, tier = excluded.tier, status = excluded.status,
-           current_period_end = excluded.current_period_end, trial_end = excluded.trial_end, updated_at = now()`,
+           current_period_end = excluded.current_period_end, trial_end = excluded.trial_end, updated_at = now()
+     returning (xmax = 0) as inserted`,
     [playerId, sub.id, map.tier, sub.status, periodEnd, ts(sub.trial_end)]
   );
+  // First time we've seen this membership, and it's live: welcome the member and alert the owner.
+  if (up.rows[0]?.inserted && ["trialing", "active"].includes(sub.status) && isFresh(sub.created)) {
+    const annual = (price as { recurring?: { interval?: string } | null } | undefined)?.recurring?.interval === "year";
+    let seat: string | undefined;
+    if (map.tier === "founding") { const s = await foundingSeatsTaken(c); seat = `Founding seat ${s.taken} of ${s.cap}`; }
+    // Held back 20 seconds so the customer record (name, email) has landed before we address them.
+    await notifyCustomer(c, `member-welcome:${sub.id}`, playerId, memberWelcome(map.tier, annual), { delaySeconds: 20 });
+    await notifyOwner(c, `member-new:${sub.id}`, ownerNewMember(map.tier, annual, seat), { playerId, delaySeconds: 20 });
+  }
   await logEvent(c, "membership.upserted", { player_id: playerId, subscription: sub.id, tier: map.tier, status: sub.status });
   await addTag(c, playerId, "member");
   if (sub.metadata?.partner) await applyPartner(c, playerId, sub.metadata.partner, "subscription");
@@ -141,6 +175,11 @@ export async function onCheckoutCompleted(c: pg.PoolClient, s: Stripe.Checkout.S
   );
   if (r.rowCount) await logEvent(c, "purchase.created", { player_id: playerId, checkout: s.id, product, amount_cents: s.amount_total ?? 0 });
   if (tag) await addTag(c, playerId, tag);
+  if (r.rowCount && isFresh(s.created)) {
+    const { sms: _noCustomerSms, ...confirmation } = purchaseConfirmation(product, s.amount_total ?? 0);
+    await notifyCustomer(c, `purchase:${s.id}`, playerId, confirmation, { to: normalizeEmail(d?.email ?? s.customer_email) });
+    await notifyOwner(c, `purchase-new:${s.id}`, ownerNewPurchase({ ...(await contactOf(c, playerId)) }, product, s.amount_total ?? 0));
+  }
 }
 
 export async function onInvoicePaymentFailed(c: pg.PoolClient, inv: Stripe.Invoice) {
@@ -152,7 +191,10 @@ export async function onInvoicePaymentFailed(c: pg.PoolClient, inv: Stripe.Invoi
     `update memberships set status = 'past_due', updated_at = now() where stripe_subscription_id = $1 returning player_id`,
     [subId]
   );
-  if (r.rowCount) await logEvent(c, "membership.payment_failed", { player_id: r.rows[0].player_id, subscription: subId, invoice: inv.id });
+  if (r.rowCount) {
+    await logEvent(c, "membership.payment_failed", { player_id: r.rows[0].player_id, subscription: subId, invoice: inv.id });
+    await notifyOwner(c, `payment-failed:${inv.id}`, ownerPaymentFailed(await contactOf(c, r.rows[0].player_id)));
+  }
 }
 
 // ---- founding seat: card saved now, billed on opening day -----------------
@@ -183,6 +225,10 @@ export async function onSetupCompleted(c: pg.PoolClient, s: Stripe.Checkout.Sess
     const meta = (s.metadata ?? {}) as Record<string, string>;
     const playerId = await upsertPlayer(c, { stripe_customer_id: customerId, name: d?.name ?? meta.name ?? null, phone: d?.phone ?? meta.phone ?? null, email: d?.email ?? null });
     if (meta.partner) await applyPartner(c, playerId, meta.partner, "founding");
+    // The founding form requires the SMS consent checkbox next to the phone field.
+    if (meta.product === "founding" && normalizePhone(meta.phone)) {
+          await c.query("update players set sms_consent_at = coalesce(sms_consent_at, now()) where id = $1", [playerId]);
+    }
     if (meta.product !== "founding" || !customerId) {
           await logEvent(c, "setup.ignored", { checkout: s.id, player_id: playerId, metadata: meta });
           return;
@@ -191,6 +237,7 @@ export async function onSetupCompleted(c: pg.PoolClient, s: Stripe.Checkout.Sess
     if (taken >= cap) {
           await c.query("insert into tags (player_id, tag, source) values ($1,'waitlist','stripe') on conflict do nothing", [playerId]);
           await logEvent(c, "founding.cap_reached", { checkout: s.id, player_id: playerId, taken, cap });
+          if (isFresh(s.created)) await notifyOwner(c, `waitlist:${s.id}`, ownerWaitlist(await contactOf(c, playerId)));
           return;
     }
     const productId = process.env.FOUNDING_PRODUCT_ID ?? (await c.query("select stripe_price_id from price_map where tier = 'founding' limit 1")).rows[0]?.stripe_price_id;
