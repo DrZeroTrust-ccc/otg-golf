@@ -82,7 +82,7 @@ export function mountRoutes(app: Express) {
                     const email = typeof src.email === "string" ? src.email.trim().slice(0, 200) : "";
                     const partner = await findPartner(pool, src.partner);
                     const stripe = new Stripe(key);
-                    const opening = new Date(process.env.OPENING_DAY ?? "2026-11-09T14:00:00Z");
+                    const opening = new Date(process.env.OPENING_DAY ?? "2026-11-20T14:00:00Z");
                     const openingText = opening.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "America/New_York" });
                     const session = await stripe.checkout.sessions.create({
                                 mode: "setup",

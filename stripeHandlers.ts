@@ -266,7 +266,7 @@ export async function onSetupCompleted(c: pg.PoolClient, s: Stripe.Checkout.Sess
     const pm = typeof si === "string" ? null : (typeof si?.payment_method === "string" ? si.payment_method : si?.payment_method?.id ?? null);
     if (pm) await stripe.customers.update(customerId, { invoice_settings: { default_payment_method: pm } });
 
-  const opening = Math.floor(new Date(process.env.OPENING_DAY ?? "2026-11-09T14:00:00Z").getTime() / 1000);
+  const opening = Math.floor(new Date(process.env.OPENING_DAY ?? "2026-11-20T14:00:00Z").getTime() / 1000);
     const now = Math.floor(Date.now() / 1000);
     const params: Record<string, unknown> = {
           customer: customerId,
