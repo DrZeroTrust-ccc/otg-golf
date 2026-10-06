@@ -3,7 +3,7 @@ import type pg from "pg";
 import { logEvent } from "./db.js";
 import { applyPartner } from "./partners.js";
 import { notifyCustomer, notifyOwner } from "./notify.js";
-import { memberWelcome, purchaseConfirmation, ownerNewMember, ownerNewPurchase, ownerPaymentFailed, ownerWaitlist } from "./templates.js";
+import { memberWelcome, purchaseConfirmation, ownerNewMember, ownerNewPurchase, ownerPaymentFailed, ownerWaitlist, waitlistConfirmation } from "./templates.js";
 
 // Messages are only queued for things that just happened. A backfill or a replay of old Stripe
 // events must never send a "welcome" to someone who joined weeks ago.
@@ -86,6 +86,21 @@ export async function upsertPlayer(
   return ins.rows[0].id;
 }
 
+// Give a player their member number (the next in sequence) unless they already have one.
+// Numbers are permanent: a member who lapses and rejoins keeps theirs.
+export async function assignMemberNumber(c: pg.PoolClient, playerId: string): Promise<number> {
+  const r = await c.query(
+    `update players set member_number = nextval('member_number_seq'), member_number_at = now()
+      where id = $1 and member_number is null returning member_number`,
+    [playerId]
+  );
+  if (r.rowCount) {
+    await logEvent(c, "member_number.assigned", { player_id: playerId, member_number: r.rows[0].member_number });
+    return r.rows[0].member_number;
+  }
+  return (await c.query("select member_number from players where id = $1", [playerId])).rows[0].member_number;
+}
+
 // ---- event handlers ------------------------------------------------------
 
 export async function onCustomer(c: pg.PoolClient, cust: Stripe.Customer) {
@@ -116,14 +131,15 @@ export async function onSubscription(c: pg.PoolClient, sub: Stripe.Subscription)
      returning (xmax = 0) as inserted`,
     [playerId, sub.id, map.tier, sub.status, periodEnd, ts(sub.trial_end)]
   );
+  const memberNumber = ["trialing", "active", "past_due"].includes(sub.status) ? await assignMemberNumber(c, playerId) : null;
   // First time we've seen this membership, and it's live: welcome the member and alert the owner.
   if (up.rows[0]?.inserted && ["trialing", "active"].includes(sub.status) && isFresh(sub.created)) {
     const annual = (price as { recurring?: { interval?: string } | null } | undefined)?.recurring?.interval === "year";
     let seat: string | undefined;
     if (map.tier === "founding") { const s = await foundingSeatsTaken(c); seat = `Founding seat ${s.taken} of ${s.cap}`; }
     // Held back 20 seconds so the customer record (name, email) has landed before we address them.
-    await notifyCustomer(c, `member-welcome:${sub.id}`, playerId, memberWelcome(map.tier, annual), { delaySeconds: 20 });
-    await notifyOwner(c, `member-new:${sub.id}`, ownerNewMember(map.tier, annual, seat), { playerId, delaySeconds: 20 });
+    await notifyCustomer(c, `member-welcome:${sub.id}`, playerId, memberWelcome(map.tier, annual, memberNumber), { delaySeconds: 20 });
+    await notifyOwner(c, `member-new:${sub.id}`, ownerNewMember(map.tier, annual, seat, memberNumber), { playerId, delaySeconds: 20 });
   }
   await logEvent(c, "membership.upserted", { player_id: playerId, subscription: sub.id, tier: map.tier, status: sub.status });
   await addTag(c, playerId, "member");
@@ -234,7 +250,10 @@ export async function onSetupCompleted(c: pg.PoolClient, s: Stripe.Checkout.Sess
     if (taken >= cap) {
           await c.query("insert into tags (player_id, tag, source) values ($1,'waitlist','stripe') on conflict do nothing", [playerId]);
           await logEvent(c, "founding.cap_reached", { checkout: s.id, player_id: playerId, taken, cap });
-          if (isFresh(s.created)) await notifyOwner(c, `waitlist:${s.id}`, ownerWaitlist(await contactOf(c, playerId)));
+          if (isFresh(s.created)) {
+                await notifyOwner(c, `waitlist:${s.id}`, ownerWaitlist(await contactOf(c, playerId)));
+                await notifyCustomer(c, `waitlist-confirm:${s.id}`, playerId, waitlistConfirmation(), { to: normalizeEmail(d?.email) });
+          }
           return;
     }
     const productId = process.env.FOUNDING_PRODUCT_ID ?? (await c.query("select stripe_price_id from price_map where tier = 'founding' limit 1")).rows[0]?.stripe_price_id;
