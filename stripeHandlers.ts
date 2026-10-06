@@ -71,22 +71,19 @@ export async function upsertPlayer(
     return row.id;
   }
   // Two Stripe events for the same new customer can arrive in the same instant. If the other one
-  // creates the player first, the insert hits a unique constraint; undo just the insert and
-  // go round again, which now finds the row and takes the update path.
-  await c.query("savepoint upsert_player");
-  try {
-    const ins = await c.query(
-      `insert into players (stripe_customer_id, name, phone, email) values ($1,$2,$3,$4) returning id`,
-      [cid, name, phone, email]
-    );
-    await c.query("release savepoint upsert_player");
-    await logEvent(c, "player.created", { player_id: ins.rows[0].id, stripe_customer_id: cid, phone, email });
-    return ins.rows[0].id;
-  } catch (e) {
-    await c.query("rollback to savepoint upsert_player");
-    if ((e as { code?: string }).code === "23505" && !_retried) return upsertPlayer(c, p, true);
-    throw e;
+  // creates the player first, the insert conflicts and returns nothing; go round again, which now
+  // finds the row and takes the update path. No savepoint, so this works inside or outside a transaction.
+  const ins = await c.query(
+    `insert into players (stripe_customer_id, name, phone, email) values ($1,$2,$3,$4)
+     on conflict do nothing returning id`,
+    [cid, name, phone, email]
+  );
+  if (!ins.rowCount) {
+    if (_retried) throw new Error(`upsertPlayer: conflict on insert but no matching player (customer ${cid ?? "-"})`);
+    return upsertPlayer(c, p, true);
   }
+  await logEvent(c, "player.created", { player_id: ins.rows[0].id, stripe_customer_id: cid, phone, email });
+  return ins.rows[0].id;
 }
 
 // ---- event handlers ------------------------------------------------------
