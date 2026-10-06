@@ -55,6 +55,25 @@ ${SIGNOFF}`.replace(/\n{3,}/g, "\n\n"),
   };
 }
 
+// For members who joined before member numbers existed, so their welcome didn't carry one.
+export function memberNumberNotice(tier: string | null, memberNumber: number): Msg {
+  const label = tier ? tierLabel(tier) : "membership";
+  const num = formatMemberNumber(memberNumber);
+  return {
+    subject: `Your On The Green member number: ${num}`,
+    text:
+`Hi {{first_name}},
+
+Thank you again for joining On The Green. Your ${label} is confirmed, and your member number is ${num}.
+
+Keep it handy: it's how we'll find you at the front desk and when you book. You don't need to do anything else.
+
+We open ${openingText()} at ${ADDRESS}. If you have any questions, reply to this email.
+
+${SIGNOFF}`,
+  };
+}
+
 export function waitlistConfirmation(): Msg {
   return {
     subject: "You're on the On The Green founding waitlist",

@@ -1,5 +1,6 @@
 import { pool, logEvent } from "./db.js";
-import { formatMemberNumber } from "./templates.js";
+import { formatMemberNumber, memberNumberNotice } from "./templates.js";
+import { notifyCustomer, customerMessagesLive } from "./notify.js";
 
 // Narrow view of the Stripe client so the smoke test can pass a fake.
 type StripeForMembers = { customers: { update: (id: string, p: { metadata: Record<string, string> }) => Promise<unknown> } };
@@ -32,4 +33,31 @@ export async function syncMemberNumbersToStripe(stripe: StripeForMembers, limit 
     }
   }
   return n;
+}
+
+// Members whose welcome never reached them with their number (they joined before numbers existed,
+// or their welcome was held while customer messages were off) get one email with it. Runs from the
+// ticker, only while customer messages are on, so nothing piles up as held. Once per member.
+export async function queueMemberNumberNotices(limit = 20): Promise<number> {
+  if (!customerMessagesLive()) return 0;
+  const q = await pool.query(
+    `select p.id, p.member_number,
+            (select tier from memberships m where m.player_id = p.id order by updated_at desc limit 1) as tier
+       from players p
+      where p.member_number is not null and p.email is not null
+        and exists (select 1 from memberships m where m.player_id = p.id and m.status in ('trialing','active','past_due'))
+        and not exists (
+          select 1 from outbox o
+           where o.player_id = p.id and o.audience = 'customer' and o.channel = 'email'
+             and (o.dedupe_key like 'member-number:%'
+                  or (o.dedupe_key like 'member-welcome:%' and o.status in ('pending','sending','sent')
+                      and o.body like '%OTG-' || lpad(p.member_number::text, greatest(4, length(p.member_number::text)), '0') || '%')))
+      order by p.member_number limit $1`,
+    [limit]
+  );
+  for (const p of q.rows) {
+    await notifyCustomer(pool, `member-number:${p.id}`, p.id, memberNumberNotice(p.tier, p.member_number));
+    await logEvent(pool, "member_number.notice_queued", { player_id: p.id, member_number: p.member_number });
+  }
+  return q.rowCount ?? 0;
 }
