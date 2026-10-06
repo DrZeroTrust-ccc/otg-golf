@@ -36,18 +36,38 @@ await attempt("form endpoint validates input", async () => {
   check("form endpoint validates input", r.status === 400, `(http ${r.status})`);
 });
 
-// The Events page must still point its form at otg-ops (not an old form service).
+// The Events page must still point its form at otg-ops (not an old form service). The reference
+// can sit in the page, an iframe, or a script bundle on any host (including lazily loaded chunks),
+// so this follows scripts, module preloads and iframes, then one level of JS chunk imports.
 await attempt("events page posts to otg-ops", async () => {
   const page = await fetch(`${SITE}/events`, { signal: timeout(), headers: { "user-agent": "otg-weekly-check" } });
   check("events page loads", page.status === 200, `(http ${page.status})`);
   const html = await page.text();
-  const texts = [html];
-  const scripts = [...html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)].map((m) => new URL(m[1], `${SITE}/`))
-    .filter((u) => u.hostname === new URL(SITE).hostname || u.hostname.endsWith(".otg.golf")).slice(0, 20);
-  for (const u of scripts) texts.push(await (await fetch(u, { signal: timeout() })).text().catch(() => ""));
   const opsHost = new URL(OPS).host;
-  const found = texts.some((t) => t.includes(`${opsHost}/inquiries`) || t.includes("go.otg.golf/inquiries"));
-  check("events page posts to otg-ops", found, found ? "" : `(no reference to ${opsHost}/inquiries in the page or its ${scripts.length} scripts)`);
+  // The URL may be built from parts (API base + "/inquiries"), so look for both in one file.
+  const hit = (t) => (t.includes(opsHost) || t.includes("go.otg.golf")) && t.includes("/inquiries");
+  const refs = (text, base, re) => [...text.matchAll(re)].map((m) => { try { return new URL(m[1] ?? m[2], base).href; } catch { return null; } }).filter(Boolean);
+  const seen = new Set();
+  let queue = refs(html, page.url, /<(?:script|iframe)[^>]+src=["']([^"']+)["']|<link[^>]+rel=["']modulepreload["'][^>]+href=["']([^"']+)["']/gi);
+  queue = [...queue, ...refs(html, page.url, /<link[^>]+href=["']([^"']+\.m?js[^"']*)["']/gi)];
+  let found = hit(html) ? "the page itself" : null;
+  for (let depth = 0; depth < 2 && !found && queue.length; depth++) {
+    const next = [];
+    for (const u of queue) {
+      if (found || seen.has(u) || seen.size >= 60) continue;
+      seen.add(u);
+      const r = await fetch(u, { signal: timeout() }).catch(() => null);
+      const t = r ? await r.text().catch(() => "") : "";
+      if (hit(t)) { found = u; break; }
+      if (/\.m?js$/.test(new URL(u).pathname) || /javascript/.test(r?.headers.get("content-type") ?? ""))
+        next.push(...refs(t, u, /["'`]((?:\.{0,2}\/|https:\/\/)[^"'`\s]+?\.m?js)["'`]/g));
+      else next.push(...refs(t, u, /<(?:script|iframe)[^>]+src=["']([^"']+)["']/gi));
+    }
+    queue = next;
+  }
+  const hosts = [...new Set([...seen].map((u) => new URL(u).host))].join(", ");
+  check("events page posts to otg-ops", Boolean(found),
+    found ? `(found in ${found})` : `(no reference to ${opsHost}/inquiries in the page or ${seen.size} linked files on ${hosts || "no hosts"})`);
 });
 
 // Optional: any owner alert or auto-reply that failed to send in the last week.
