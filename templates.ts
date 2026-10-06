@@ -6,7 +6,7 @@ const PHONE = "(540) 340-9067";
 const SIGNOFF = `Chase Cunningham\nOn The Green Indoor Golf\n${ADDRESS}\n${PHONE} | otg.golf`;
 
 export function openingText(): string {
-  const d = new Date(process.env.OPENING_DAY ?? "2026-11-09T14:00:00Z");
+  const d = new Date(process.env.OPENING_DAY ?? "2026-11-20T14:00:00Z");
   return d.toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "America/New_York" });
 }
 
