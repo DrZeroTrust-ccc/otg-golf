@@ -27,8 +27,12 @@ const TIER_PERKS: Record<string, string> = {
 };
 export const tierLabel = (tier: string, annual = false) => (TIER_LABEL[tier] ?? "Membership") + (annual ? " (annual)" : "");
 
-export function memberWelcome(tier: string, annual: boolean): Msg {
+// Member numbers are stored as plain integers and always shown as OTG-0001.
+export const formatMemberNumber = (n: number | null | undefined) => (n ? `OTG-${String(n).padStart(4, "0")}` : null);
+
+export function memberWelcome(tier: string, annual: boolean, memberNumber?: number | null): Msg {
   const label = tierLabel(tier, annual);
+  const num = formatMemberNumber(memberNumber);
   const open = openingText();
   const billing = tier === "founding"
     ? `Your card is saved and nothing has been charged. Billing starts on opening day, ${open}.`
@@ -39,7 +43,7 @@ export function memberWelcome(tier: string, annual: boolean): Msg {
 `Hi {{first_name}},
 
 Thank you for joining On The Green. Your ${label} is confirmed.
-
+${num ? `\nYour member number is ${num}. Keep it handy: it's how we'll find you at the front desk and when you book.\n` : ""}
 ${billing}
 
 ${TIER_PERKS[tier] ?? ""}
@@ -47,7 +51,21 @@ ${TIER_PERKS[tier] ?? ""}
 We open ${open} at ${ADDRESS}. Before then I'll send you how to book your first bay. If you'd like a look around before we open, reply to this email and I'll set up a time.
 
 ${SIGNOFF}`.replace(/\n{3,}/g, "\n\n"),
-    sms: `On The Green: Welcome, {{first_name}}! Your ${label} is confirmed. We open ${open}. Questions? Call or text ${PHONE}. Reply STOP to opt out.`,
+    sms: `On The Green: Welcome, {{first_name}}! Your ${label} is confirmed${num ? ` (member number ${num})` : ""}. We open ${open}. Questions? Call or text ${PHONE}. Reply STOP to opt out.`,
+  };
+}
+
+export function waitlistConfirmation(): Msg {
+  return {
+    subject: "You're on the On The Green founding waitlist",
+    text:
+`Hi {{first_name}},
+
+Thanks for signing up for a founding membership. All of our founding seats were taken before your signup came through, so you're on the waitlist and your card has not been charged.
+
+If a founding seat opens up, I'll contact you before anything is charged. In the meantime, Full and Weekday memberships are open at otg.golf/memberships, and you're welcome to reply to this email with any questions.
+
+${SIGNOFF}`,
   };
 }
 
@@ -113,12 +131,13 @@ const who = (p: { name?: string | null; email?: string | null; phone?: string | 
 
 // {{name}} and {{contact}} are filled in at send time: Stripe often delivers the subscription a
 // moment before the customer record that carries the name and email.
-export function ownerNewMember(tier: string, annual: boolean, seat?: string): Msg {
+export function ownerNewMember(tier: string, annual: boolean, seat?: string, memberNumber?: number | null): Msg {
   const label = tierLabel(tier, annual);
+  const num = formatMemberNumber(memberNumber);
   return {
-    subject: `New ${label}: {{name}}`,
-    text: `New ${label}.\n\n{{contact}}${seat ? `\n${seat}` : ""}\n\nA personal note or call today goes a long way.`,
-    sms: `OTG: New ${label} - {{name}}${seat ? `. ${seat}` : ""}`,
+    subject: `New ${label}: {{name}}${num ? ` (${num})` : ""}`,
+    text: `New ${label}.\n\n{{contact}}${num ? `\nMember number: ${num}` : ""}${seat ? `\n${seat}` : ""}\n\nA personal note or call today goes a long way.`,
+    sms: `OTG: New ${label} - {{name}}${num ? ` (${num})` : ""}${seat ? `. ${seat}` : ""}`,
   };
 }
 

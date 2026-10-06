@@ -93,6 +93,12 @@ check("membership: customer messages HELD while CUSTOMER_MESSAGES is off", by(`m
 check("membership: annual plan named in the welcome", by(`member-welcome:${sub}:email`)[0]?.body.includes("Full Membership (annual)"));
 check("membership: owner email alert sent", by(`member-new:${sub}:email:chase@otg.golf`)[0]?.status === "sent");
 check("membership: owner sms queued to OWNER_ALERT_PHONE (skipped: twilio off in test)", by(`member-new:${sub}:sms:owner`)[0]?.to_addr === "+15405550100" && by(`member-new:${sub}:sms:owner`)[0]?.status === "skipped");
+const memNo = (await q("select member_number from players where stripe_customer_id=$1", [cus]))[0].member_number;
+const fmt = `OTG-${String(memNo).padStart(4, "0")}`;
+check("membership: member number assigned", Number.isInteger(memNo) && memNo > 0, fmt);
+check("membership: member number in the welcome email and sms", by(`member-welcome:${sub}:`).length === 2 && by(`member-welcome:${sub}:`).every((r) => r.body.includes(fmt)));
+check("membership: member number in the owner alert", by(`member-new:${sub}:email:chase@otg.golf`)[0]?.body.includes(`Member number: ${fmt}`));
+check("membership: second subscription keeps the same number", (await q("select member_number from players where stripe_customer_id=$1", [cus]))[0].member_number === memNo);
 check("old subscription queued nothing", by(`member-welcome:${sub}_old`).length === 0 && by(`member-new:${sub}_old`).length === 0);
 check("purchase: confirmation email held, no customer sms", by(`purchase:${cs}:`).length === 1 && by(`purchase:${cs}:email`)[0].status === "held");
 check("purchase: owner alert sent", by(`purchase-new:${cs}:email:chase@otg.golf`)[0]?.status === "sent");

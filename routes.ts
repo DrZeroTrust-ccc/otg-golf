@@ -40,7 +40,7 @@ export function mountRoutes(app: Express) {
   app.get("/people", requireKey, async (req, res) => {
         const tag = typeof req.query.tag === "string" ? req.query.tag : null;
         const q = await pool.query(
-                `select p.id, p.name, p.phone, p.email,
+                `select p.id, p.member_number, p.name, p.phone, p.email,
                               coalesce(array_agg(distinct t.tag) filter (where t.tag is not null), '{}') as tags,
                                             m.tier, m.status
                                                      from players p
