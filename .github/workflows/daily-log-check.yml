@@ -1,0 +1,25 @@
+name: Daily otg-ops error log check
+# Every day 12:00 UTC = 8am US Eastern (7am in winter). Looks back 24 hours. No Claude involved.
+on:
+  schedule:
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node monitor/log_scan.mjs
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_MESSAGING_SERVICE_SID: ${{ secrets.TWILIO_MESSAGING_SERVICE_SID }}
+          OWNER_ALERT_PHONE: ${{ secrets.OWNER_ALERT_PHONE }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
