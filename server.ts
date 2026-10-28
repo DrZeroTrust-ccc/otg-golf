@@ -1,7 +1,7 @@
 import express from "express";
 import Stripe from "stripe";
 import { pool, logEvent } from "./db.js";
-import { onCustomer, onSubscription, onCheckoutCompleted, onInvoicePaymentFailed, onSetupCompleted } from "./stripeHandlers.js";
+import { onCustomer, onSubscription, onCheckoutCompleted, onInvoicePaymentFailed, onSetupCompleted, alignFoundingTrials } from "./stripeHandlers.js";
 import { mountRoutes } from "./routes.js";
 import { mountInquiries, nudgeStaleInquiries } from "./inquiries.js";
 import { syncMemberNumbersToStripe, queueMemberNumberNotices } from "./members.js";
@@ -99,12 +99,14 @@ const port = Number(process.env.PORT ?? 3000);
 if (process.env.NODE_ENV !== "test") {
   app.listen(port, () => console.log(`otg-ops listening on ${port}`));
   // Once a minute: retry anything unsent, re-alert on event inquiries nobody has answered,
-  // email member numbers to members whose welcome didn't carry one, and copy numbers onto Stripe.
+  // email member numbers to members whose welcome didn't carry one, copy numbers onto Stripe,
+  // and keep founding members' billing start on opening day (or pushed out while no date is set).
   setInterval(() => {
     void (async () => {
       try { await nudgeStaleInquiries(); } catch (e) { console.error("nudge failed:", (e as Error).message); }
       try { await queueMemberNumberNotices(); } catch (e) { console.error("member number notices failed:", (e as Error).message); }
       if (stripe) try { await syncMemberNumbersToStripe(stripe); } catch (e) { console.error("member number sync failed:", (e as Error).message); }
+      if (stripe) try { await alignFoundingTrials(stripe); } catch (e) { console.error("founding trial alignment failed:", (e as Error).message); }
       await dispatchOutbox();
     })();
   }, 60_000).unref();

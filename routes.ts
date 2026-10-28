@@ -3,6 +3,7 @@ import type { Express, Request, Response, NextFunction } from "express";
 import Stripe from "stripe";
 import { pool } from "./db.js";
 import { foundingSeatsTaken } from "./stripeHandlers.js";
+import { openingText } from "./templates.js";
 import { sendSms, onInboundSms, verifyTwilioSignature, smsConfigured } from "./sms.js";
 import { findPartner, partnerCounts, priceForPlan, couponForPlan, OFFERS, type Plan } from "./partners.js";
 
@@ -82,15 +83,17 @@ export function mountRoutes(app: Express) {
                     const email = typeof src.email === "string" ? src.email.trim().slice(0, 200) : "";
                     const partner = await findPartner(pool, src.partner);
                     const stripe = new Stripe(key);
-                    const opening = new Date(process.env.OPENING_DAY ?? "2026-11-09T14:00:00Z");
-                    const openingText = opening.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "America/New_York" });
+                    const open = openingText(true);
+                    const billing = open
+                              ? `$249/month is billed starting opening day, ${open}`
+                              : "$249/month is billed starting opening day, and we'll tell you the date before anything is charged";
                     const session = await stripe.checkout.sessions.create({
                                 mode: "setup",
                         currency: "usd",
                                 customer_creation: "always",
                                 ...(email ? { customer_email: email } : {}),
                                 metadata: { product: "founding", name, phone, ...(partner ? { partner: partner.slug } : {}) },
-                                custom_text: { submit: { message: `Your card is saved today and nothing is charged now. $249/month is billed starting opening day, ${openingText}, and your founding rate is locked for life.` } },
+                                custom_text: { submit: { message: `Your card is saved today and nothing is charged now. ${billing}. Your founding rate is locked for life.` } },
                                 success_url: `${site}/founding-confirmed?session_id={CHECKOUT_SESSION_ID}`,
                                 cancel_url: `${site}/`,
                     });
