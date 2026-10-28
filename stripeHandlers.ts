@@ -1,9 +1,9 @@
 import type Stripe from "stripe";
 import type pg from "pg";
-import { logEvent } from "./db.js";
+import { pool, logEvent } from "./db.js";
 import { applyPartner } from "./partners.js";
 import { notifyCustomer, notifyOwner } from "./notify.js";
-import { memberWelcome, purchaseConfirmation, ownerNewMember, ownerNewPurchase, ownerPaymentFailed, ownerWaitlist, waitlistConfirmation } from "./templates.js";
+import { openingDay, memberWelcome, purchaseConfirmation, ownerNewMember, ownerNewPurchase, ownerPaymentFailed, ownerWaitlist, waitlistConfirmation } from "./templates.js";
 
 // Messages are only queued for things that just happened. A backfill or a replay of old Stripe
 // events must never send a "welcome" to someone who joined weeks ago.
@@ -212,6 +212,52 @@ export async function onInvoicePaymentFailed(c: pg.PoolClient, inv: Stripe.Invoi
 
 // ---- founding seat: card saved now, billed on opening day -----------------
 
+// With no opening day set, founding subscriptions sit in a trial this far out (Stripe allows up to
+// 730 days) so nothing bills; alignFoundingTrials moves them all to the real date once it's set.
+const NO_DATE_TRIAL_DAYS = 700;
+const DAY = 86_400;
+
+// When a founding subscription should start billing: opening day if it's set and still ahead,
+// the far-off placeholder if no date is set, or null (bill now) once opening day has passed.
+export function foundingTrialEnd(now = Math.floor(Date.now() / 1000)): number | null {
+    const d = openingDay();
+    if (!d) return now + NO_DATE_TRIAL_DAYS * DAY;
+    const opening = Math.floor(d.getTime() / 1000);
+    return opening > now + 60 ? opening : null;
+}
+
+type StripeForTrials = { subscriptions: { update: (id: string, p: { trial_end: number; proration_behavior: "none" }) => Promise<unknown> } };
+
+// Runs from the ticker. Keeps every trialing founding subscription's billing start on opening day:
+// with no date set, any trial ending within 60 days is pushed out to the placeholder (so nobody is
+// billed for a date that slipped); with a date set, every trial is moved to exactly that date.
+export async function alignFoundingTrials(stripe: StripeForTrials, limit = 20): Promise<number> {
+    const now = Math.floor(Date.now() / 1000);
+    const target = foundingTrialEnd(now);
+    if (!target) return 0; // opening day has passed: trials end on their own
+    const q = openingDay()
+          ? await pool.query(
+                `select stripe_subscription_id, player_id, trial_end from memberships
+                  where tier = 'founding' and status = 'trialing' and (trial_end is null or trial_end <> to_timestamp($1))
+                  limit $2`, [target, limit])
+          : await pool.query(
+                `select stripe_subscription_id, player_id, trial_end from memberships
+                  where tier = 'founding' and status = 'trialing' and (trial_end is null or trial_end < to_timestamp($1))
+                  limit $2`, [now + 60 * DAY, limit]);
+    let n = 0;
+    for (const m of q.rows) {
+          try {
+                await stripe.subscriptions.update(m.stripe_subscription_id, { trial_end: target, proration_behavior: "none" });
+                await pool.query("update memberships set trial_end = to_timestamp($2), updated_at = now() where stripe_subscription_id = $1", [m.stripe_subscription_id, target]);
+                await logEvent(pool, "founding.trial_moved", { player_id: m.player_id, subscription: m.stripe_subscription_id, from: m.trial_end, to: openingDay() ? new Date(target * 1000).toISOString() : "opening day (not set)" });
+                n++;
+          } catch (e) {
+                console.error(`founding trial move failed for ${m.stripe_subscription_id}:`, (e as Error).message);
+          }
+    }
+    return n;
+}
+
 export const FOUNDING_CAP_DEFAULT = 40;
 
 export async function foundingSeatsTaken(c: pg.PoolClient | pg.Pool): Promise<{ taken: number; cap: number }> {
@@ -266,15 +312,15 @@ export async function onSetupCompleted(c: pg.PoolClient, s: Stripe.Checkout.Sess
     const pm = typeof si === "string" ? null : (typeof si?.payment_method === "string" ? si.payment_method : si?.payment_method?.id ?? null);
     if (pm) await stripe.customers.update(customerId, { invoice_settings: { default_payment_method: pm } });
 
-  const opening = Math.floor(new Date(process.env.OPENING_DAY ?? "2026-11-09T14:00:00Z").getTime() / 1000);
-    const now = Math.floor(Date.now() / 1000);
+  const now = Math.floor(Date.now() / 1000);
+    const trialEnd = foundingTrialEnd(now);
     const params: Record<string, unknown> = {
           customer: customerId,
           items: [{ price: price.id }],
           metadata: { product: "founding", checkout: s.id, ...(meta.partner ? { partner: meta.partner } : {}) },
           ...(pm ? { default_payment_method: pm } : {}),
-          ...(opening > now + 60 ? { trial_end: opening } : {}),
+          ...(trialEnd ? { trial_end: trialEnd } : {}),
     };
     const sub = await stripe.subscriptions.create(params);
-    await logEvent(c, "founding.subscription_created", { player_id: playerId, subscription: sub.id, bills_on: opening > now ? new Date(opening * 1000).toISOString() : "now", seat: taken + 1, cap });
+    await logEvent(c, "founding.subscription_created", { player_id: playerId, subscription: sub.id, bills_on: trialEnd ? (openingDay() ? new Date(trialEnd * 1000).toISOString() : "opening day (not set)") : "now", seat: taken + 1, cap });
 }

@@ -5,10 +5,25 @@ const ADDRESS = "7144 Farm Station Rd, Vint Hill, VA 20187";
 const PHONE = "(540) 340-9067";
 const SIGNOFF = `Chase Cunningham\nOn The Green Indoor Golf\n${ADDRESS}\n${PHONE} | otg.golf`;
 
-export function openingText(): string {
-  const d = new Date(process.env.OPENING_DAY ?? "2026-11-09T14:00:00Z");
-  return d.toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "America/New_York" });
+// Opening day comes only from the Render env var OPENING_DAY (e.g. 2026-12-05T14:00:00Z).
+// Unset, blank or not a date means no date has been announced: every message says "opening soon"
+// and founding members are not billed until it is set (see alignFoundingTrials).
+export function openingDay(): Date | null {
+  const raw = process.env.OPENING_DAY?.trim();
+  if (!raw) return null;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
+
+export function openingText(withYear = false): string | null {
+  const d = openingDay();
+  return d ? d.toLocaleDateString("en-US", { month: "long", day: "numeric", ...(withYear ? { year: "numeric" } : {}), timeZone: "America/New_York" }) : null;
+}
+
+const openingLine = () => {
+  const open = openingText();
+  return open ? `We open ${open} at ${ADDRESS}.` : `We're opening soon at ${ADDRESS}, and I'll let you know the date as soon as it's set.`;
+};
 
 export const money = (cents: number) =>
   `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: cents % 100 ? 2 : 0, maximumFractionDigits: 2 })}`;
@@ -35,7 +50,9 @@ export function memberWelcome(tier: string, annual: boolean, memberNumber?: numb
   const num = formatMemberNumber(memberNumber);
   const open = openingText();
   const billing = tier === "founding"
-    ? `Your card is saved and nothing has been charged. Billing starts on opening day, ${open}.`
+    ? (open
+        ? `Your card is saved and nothing has been charged. Billing starts on opening day, ${open}.`
+        : "Your card is saved and nothing has been charged. Billing starts on opening day, and I'll tell you the date before anything is charged.")
     : "Stripe has emailed your receipt separately.";
   return {
     subject: tier === "founding" ? "You're a founding member of On The Green" : `Welcome to On The Green: your ${label}`,
@@ -48,10 +65,10 @@ ${billing}
 
 ${TIER_PERKS[tier] ?? ""}
 
-We open ${open} at ${ADDRESS}. Before then I'll send you how to book your first bay. If you'd like a look around before we open, reply to this email and I'll set up a time.
+${openingLine()} Before then I'll send you how to book your first bay. If you'd like a look around before we open, reply to this email and I'll set up a time.
 
 ${SIGNOFF}`.replace(/\n{3,}/g, "\n\n"),
-    sms: `On The Green: Welcome, {{first_name}}! Your ${label} is confirmed${num ? ` (member number ${num})` : ""}. We open ${open}. Questions? Call or text ${PHONE}. Reply STOP to opt out.`,
+    sms: `On The Green: Welcome, {{first_name}}! Your ${label} is confirmed${num ? ` (member number ${num})` : ""}. ${open ? `We open ${open}.` : "We're opening soon."} Questions? Call or text ${PHONE}. Reply STOP to opt out.`,
   };
 }
 
@@ -68,7 +85,7 @@ Thank you again for joining On The Green. Your ${label} is confirmed, and your m
 
 Keep it handy: it's how we'll find you at the front desk and when you book. You don't need to do anything else.
 
-We open ${openingText()} at ${ADDRESS}. If you have any questions, reply to this email.
+${openingLine()} If you have any questions, reply to this email.
 
 ${SIGNOFF}`,
   };
@@ -113,7 +130,7 @@ Thank you. Your ${label} (${money(amountCents)}) is confirmed, and Stripe has em
 
 ${PRODUCT_NEXT[product] ?? "I'll be in touch with the next steps."}
 
-We open ${openingText()} at ${ADDRESS}. If you have any questions, reply to this email.
+${openingLine()} If you have any questions, reply to this email.
 
 ${SIGNOFF}`,
   };
