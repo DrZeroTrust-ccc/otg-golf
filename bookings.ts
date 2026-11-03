@@ -15,7 +15,7 @@ import {
   isDate, hm, fmtHm, addDays, describeSlot, earlyDeadline, atVenue, isEarly, guestSplit, primePausedUntil, touchesPrime,
   type Settings, type Plan,
 } from "./booking_rules.js";
-import { bookPage, staffPage, manifest, icon } from "./booking_pages.js";
+import { bookPage, staffPage, manifest, icon, images } from "./booking_pages.js";
 
 type Db = pg.Pool | pg.PoolClient;
 type Bay = { id: string; name: string; kind: "sim" | "putt"; premier: boolean; sort: number };
@@ -422,6 +422,12 @@ export function mountBookings(app: Express) {
   app.get("/staff", html(staffPage));
   app.get("/book/manifest.webmanifest", (_req, res) => { res.type("application/manifest+json").send(manifest); });
   app.get("/book/icon.svg", (_req, res) => { res.set("Cache-Control", "public, max-age=86400"); res.type("image/svg+xml").send(icon); });
+  app.get("/book/:file", (req, res, next) => {
+    const img = images[req.params.file];
+    if (!img) return next();
+    res.set("Cache-Control", "public, max-age=86400");
+    res.type("image/png").send(img);
+  });
 
   app.post("/api/auth/start", json, wrap(startSignIn));
   app.post("/api/auth/verify", json, wrap(verifySignIn));
