@@ -9,7 +9,10 @@ import pg from "pg";
 import * as R from "./dist/booking_rules.js";
 
 const base = "http://localhost:3999";
+// Local test database only: it clears the bookings table so each run starts from an empty schedule.
+if (!/localhost|127\.0\.0\.1/.test(process.env.DATABASE_URL ?? "")) { console.error("booking_smoke.mjs runs against a local database only"); process.exit(2); }
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+await pool.query("delete from bookings");
 const q = async (sql, a = []) => (await pool.query(sql, a)).rows;
 let fails = 0;
 const check = (name, ok, extra = "") => { console.log(`${ok ? "PASS" : "FAIL"}  ${name} ${extra}`); if (!ok) fails++; };
@@ -30,17 +33,28 @@ check("Weekday member pays from 6pm Tue (Standard)", R.priceFor(S, { kind: "sim"
 check("Eastern time: 6pm in summer is 22:00Z", R.etToUtc("2026-07-10", 18 * 60).toISOString() === "2026-07-10T22:00:00.000Z");
 check("Eastern time: 6pm in winter is 23:00Z", R.etToUtc("2026-12-10", 18 * 60).toISOString() === "2026-12-10T23:00:00.000Z");
 check("partial settings keep the other rates", R.mergeSettings({ rates_cents: { prime: 8000 } }).rates_cents.offpeak === 5000);
+const g1 = R.guestSplit(S, "full", 3, 5);
+check("Full member with 1 pass left brings 3 guests: 1 pass + $20", g1.passes === 1 && g1.feeCents === 2000, JSON.stringify(g1));
+check("Founding guests are free", R.guestSplit(S, "founding", 5, 99).feeCents === 0);
+check("non-member groups pay no guest fee", R.guestSplit(S, "none", 5, 0).feeCents === 0);
+const nowT = new Date();
+const daysAgo = (n) => new Date(nowT.getTime() - n * 86400_000);
+check("3 misses in 60 days pause Prime", R.primePausedUntil(S, [daysAgo(1), daysAgo(10), daysAgo(20)], nowT) !== null);
+check("2 misses don't", R.primePausedUntil(S, [daysAgo(1), daysAgo(10)], nowT) === null);
+check("misses older than 60 days don't count", R.primePausedUntil(S, [daysAgo(1), daysAgo(10), daysAgo(70)], nowT) === null);
 
 // ---- fake Stripe ------------------------------------------------------------------
 const stripeCalls = [];
 http.createServer((req, res) => {
   let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
     const body = Object.fromEntries(new URLSearchParams(b));
-    stripeCalls.push({ path: req.url, body });
+    stripeCalls.push({ path: req.url, method: req.method, body });
     res.setHeader("content-type", "application/json");
     if (req.url === "/v1/customers") return res.end(JSON.stringify({ id: `cus_bk_${run}_${stripeCalls.length}`, object: "customer" }));
     if (req.url === "/v1/checkout/sessions") { const id = `cs_bk_${run}_${stripeCalls.length}`; return res.end(JSON.stringify({ id, object: "checkout.session", url: `https://checkout.example/${id}` })); }
     if (req.url.endsWith("/expire")) return res.end(JSON.stringify({ id: req.url.split("/")[4], object: "checkout.session", status: "expired" }));
+    if (req.url === "/v1/invoiceitems") return res.end(JSON.stringify({ id: `ii_${run}_${stripeCalls.length}`, object: "invoiceitem", amount: Number(body.amount) }));
+    if (req.url.startsWith("/v1/invoiceitems/") && req.method === "DELETE") return res.end(JSON.stringify({ id: req.url.split("/")[3], object: "invoiceitem", deleted: true }));
     if (req.url === "/v1/refunds") return res.end(JSON.stringify({ id: `re_${stripeCalls.length}`, object: "refund", amount: Number(body.amount) }));
     res.statusCode = 404; res.end("{}");
   });
@@ -172,11 +186,94 @@ const dv = await staff.get(`/api/staff/day?date=${day}`, staffH);
 const w = dv.body.bookings?.find((b) => b.id === walk.body.booking_id);
 check("staff day view shows it, priced and marked pay at desk", w && w.price_cents === 7500 && /Pay at desk/.test(w.note) && w.start === "15:00", JSON.stringify(w));
 
+// ---- part 2: guest passes, check-in, no-shows, strikes, early access ----
+async function memberClient(tier, extra = {}) {
+  const em = `${tier}.${Math.random().toString(36).slice(2, 8)}.${run}@example.com`;
+  const id = (await q("insert into players (name, email, stripe_customer_id) values ($1, $2, $3) returning id", [`${tier} member`, em, extra.cus ?? null]))[0].id;
+  await pool.query("insert into memberships (player_id, stripe_subscription_id, tier, status) values ($1, $2, $3, 'active')", [id, `sub_${tier}_${Math.random().toString(36).slice(2)}`, tier]);
+  const cl = client();
+  const c0 = await cl.post("/api/auth/start", { email: em });
+  await cl.post("/api/auth/verify", { email: em, code: c0.body.test_code });
+  return { cl, id };
+}
+const fullM = await memberClient("full");
+const gA = await fullM.cl.post("/api/bookings", { bay_id: "bay4", date: day, start: "16:00", minutes: 60, guests: 4 });
+check("Full member: 4 guests use 4 of 6 passes, free", gA.status === 200 && gA.body.confirmed, JSON.stringify(gA.body));
+const gB = await fullM.cl.post("/api/bookings", { bay_id: "bay4", date: day, start: "17:00", minutes: 60, guests: 5 });
+const gBrow = (await q("select guest_passes_used, guest_fee_cents, price_cents, status from bookings where id = $1", [gB.body.booking_id]))[0];
+check("...then 5 more guests: 2 passes + 3 x $10, paid at checkout", gB.status === 200 && !!gB.body.checkout_url && gBrow.guest_passes_used === 2 && gBrow.guest_fee_cents === 3000 && gBrow.price_cents === 3000, JSON.stringify(gBrow));
+check("passes left shows 0", (await fullM.cl.get("/api/me")).body.guest_passes_left === 0);
+const fdM = await memberClient("founding");
+const gC = await fdM.cl.post("/api/bookings", { bay_id: "bay3", date: day, start: "17:00", minutes: 60, guests: 5 });
+check("Founding member: 5 guests free", gC.status === 200 && gC.body.confirmed);
+
+// check-in by QR
+const code = (await q("select checkin_code from booking_settings where id = 1"))[0].checkin_code;
+check("a check-in code exists", typeof code === "string" && code.length >= 8);
+const qrUrl = await staff.get("/api/staff/checkin-code", staffH);
+check("staff screen gets the QR link", qrUrl.body.url?.endsWith(`/book?here=${code}`));
+const ciM = await memberClient("full");
+const ciB = (await q(`insert into bookings (bay_id, player_id, starts_at, ends_at, status, plan)
+  values ('putt', $1, now() + interval '10 minutes', now() + interval '70 minutes', 'confirmed', 'full') returning id`, [ciM.id]))[0].id;
+check("wrong desk code refused", (await ciM.cl.post("/api/checkin", { code: "nope" })).status === 400);
+const ci = await ciM.cl.post("/api/checkin", { code });
+check("QR check-in works 10 minutes early", ci.status === 200 && (await q("select checked_in_by from bookings where id = $1", [ciB]))[0].checked_in_by === "qr", JSON.stringify(ci.body));
+
+// no-show fixtures (the minute tick runs during the wait below)
+await staff.put("/api/staff/settings", { overrides: { first_day: today, holidays: [day], no_show_fees_on: true } }, staffH);
+const nsM = await memberClient("full", { cus: `cus_ns_${run}` });
+const nsB = (await q(`insert into bookings (bay_id, player_id, starts_at, ends_at, status, plan)
+  values ('bay4', $1, now() - interval '20 minutes', now() + interval '40 minutes', 'confirmed', 'full') returning id`, [nsM.id]))[0].id;
+const nsGuest = (await q(`insert into bookings (bay_id, player_id, starts_at, ends_at, status, plan)
+  values ('bay3', $1, now() - interval '20 minutes', now() + interval '40 minutes', 'confirmed', 'none') returning id`, [pid]))[0].id;
+
+// strikes
+const stM = await memberClient("full");
+for (const d of [2, 5, 9]) await pool.query(`insert into bookings (bay_id, player_id, starts_at, ends_at, status, plan, no_show_at)
+  values ('putt', $1, now() - ($2 || ' days')::interval, now() - ($2 || ' days')::interval + interval '1 hour', 'no_show', 'full', now() - ($2 || ' days')::interval)`, [stM.id, String(d)]);
+const stPrime = await stM.cl.post("/api/bookings", { bay_id: "bay2", date: day, start: "20:00", minutes: 60 });
+check("3 misses: Prime booking paused", stPrime.status === 400 && /paused/.test(stPrime.body.error), stPrime.body.error);
+const plainDay = (() => { for (let i = 1; i <= 7; i++) { const d = R.addDays(today, i); const w = new Date(d + "T12:00:00Z").getUTCDay(); if (w >= 1 && w <= 4 && d !== day) return d; } })();
+const stOk = await stM.cl.post("/api/bookings", { bay_id: "bay2", date: plainDay, start: "11:00", minutes: 60 });
+check("...but Off-peak still books", stOk.status === 200, JSON.stringify(stOk.body));
+
+// early access (the test day is 3 days out, so the deadline the day before hasn't passed)
+const openMin = R.hoursFor(R.mergeSettings({}), day)[0];
+const earlyStart = R.fmtHm(openMin - 60);
+const ea = await fdM.cl.post("/api/bookings", { bay_id: "bay2", date: day, start: earlyStart, minutes: 60 });
+check("member asks for an early start", ea.status === 200 && ea.body.requested === true, JSON.stringify(ea.body));
+check("owner gets an early-start alert", (await q("select 1 from outbox where dedupe_key like $1", [`booking-early-owner:${ea.body.booking_id}:%`])).length >= 1);
+const eaView = (await fullM.cl.get(`/api/availability?date=${day}`)).body.bays;
+check("other members see early slots, and this one as taken", eaView.find((b) => b.id === "bay3").slots.find((x) => x.t === earlyStart)?.state === "early" && eaView.find((b) => b.id === "bay2").slots.find((x) => x.t === earlyStart)?.state === "taken");
+const eaGuest = await guest.post("/api/bookings", { bay_id: "bay3", date: day, start: earlyStart, minutes: 120 });
+check("non-members can't ask for early starts", eaGuest.status === 400, eaGuest.body.error);
+const ap = await staff.post(`/api/staff/bookings/${ea.body.booking_id}/early`, { approve: true }, staffH);
+check("staff approve it", ap.status === 200 && (await q("select status from bookings where id = $1", [ea.body.booking_id]))[0].status === "confirmed");
+
+// late cancel by a member counts as a strike
+const lcM = await memberClient("full");
+const lcB = (await q(`insert into bookings (bay_id, player_id, starts_at, ends_at, status, plan)
+  values ('putt', $1, now() + interval '5 hours', now() + interval '6 hours', 'confirmed', 'full') returning id`, [lcM.id]))[0].id;
+const lc = await lcM.cl.post(`/api/bookings/${lcB}/cancel`);
+check("member cancelling 5 hours ahead is a late cancel", lc.status === 200 && lc.body.late_cancel === true);
+
 // ---- reminders ----
 const soon = (await q(`insert into bookings (bay_id, player_id, starts_at, ends_at, status, created_at)
   values ('putt', $1, now() + interval '2 hours', now() + interval '3 hours', 'confirmed', now() - interval '1 day') returning id`, [pid]))[0].id;
 await new Promise((r) => setTimeout(r, 65_000));
 check("reminder queued about 3 hours before", (await q("select 1 from outbox where dedupe_key = $1", [`booking-reminder:${soon}:sms`])).length === 1);
+const ns = (await q("select status, no_show_fee_cents, no_show_invoice_item from bookings where id = $1", [nsB]))[0];
+check("no check-in after 15 minutes: released as a no-show with a $20 fee", ns.status === "no_show" && ns.no_show_fee_cents === 2000 && !!ns.no_show_invoice_item, JSON.stringify(ns));
+check("the fee went on their Stripe bill", stripeCalls.some((c) => c.path === "/v1/invoiceitems" && c.body.customer === `cus_ns_${run}` && c.body.amount === "2000"));
+check("no-show message queued", (await q("select 1 from outbox where dedupe_key like $1", [`booking-noshow:${nsB}:%`])).length === 2);
+const nsg = (await q("select status, no_show_fee_cents from bookings where id = $1", [nsGuest]))[0];
+check("non-member no-show: released, no fee (they prepaid)", nsg.status === "no_show" && nsg.no_show_fee_cents === 0);
+check("released bay is open again", (await other.get(`/api/availability?date=${today}`)).status === 200);
+const late = await nsM.cl.post("/api/checkin", { code });
+const nsAfter = (await q("select status, no_show_waived, no_show_fee_cents, checked_in_at from bookings where id = $1", [nsB]))[0];
+check("they turn up and scan: booking restored, fee dropped", late.status === 200 && nsAfter.status === "confirmed" && nsAfter.no_show_waived && nsAfter.no_show_fee_cents === 0 && nsAfter.checked_in_at, JSON.stringify(nsAfter));
+check("fee removed from Stripe", stripeCalls.some((c) => c.method === "DELETE" && c.path.startsWith("/v1/invoiceitems/")));
+check("checked-in booking was not marked no-show", (await q("select status from bookings where id = $1", [ciB]))[0].status === "confirmed");
 
 await pool.query("update booking_settings set config = '{}' where id = 1");
 await pool.end();

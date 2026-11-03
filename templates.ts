@@ -227,14 +227,14 @@ export function ownerWaitlist(p: { name?: string | null; email?: string | null; 
 
 const BOOK_URL = () => `${process.env.PUBLIC_BASE_URL ?? "https://otg-ops.onrender.com"}/book`;
 
-export function bookingConfirmed(b: { bay: string; when: string; priceCents: number; guests: number }): Msg {
+export function bookingConfirmed(b: { bay: string; when: string; priceCents: number; guests: number; early?: boolean }): Msg {
   const paid = b.priceCents ? `Paid: ${money(b.priceCents)}. Stripe has emailed your receipt separately.` : "Included in your membership.";
   return {
     subject: `Booked: ${b.bay}, ${b.when}`,
     text:
 `Hi {{first_name}},
 
-You're booked at On The Green.
+${b.early ? "Your early start is approved. We'll have the doors open for you." : "You're booked at On The Green."}
 
 ${b.bay}
 ${b.when}
@@ -247,7 +247,7 @@ Paid bookings cancelled at least 24 hours ahead are refunded in full.
 See you at ${ADDRESS}.
 
 ${SIGNOFF}`,
-    sms: `OTG: You're booked. ${b.bay}, ${b.when}. Manage it at ${BOOK_URL()}`,
+    sms: `OTG: ${b.early ? "Early start approved" : "You're booked"}. ${b.bay}, ${b.when}. Scan the code at the front desk when you arrive. Manage it at ${BOOK_URL()}`,
   };
 }
 
@@ -276,5 +276,39 @@ export function ownerBookingConflict(b: { bay: string; when: string; checkout: s
     subject: `Booking needs you: paid after the hold ran out (${b.bay}, ${b.when})`,
     text: `Someone paid for ${b.bay}, ${b.when}, but the slot was taken after their hold expired. Refund them in Stripe (checkout ${b.checkout}) or move them to another bay from the staff screen.`,
     sms: `OTG: Paid booking clash on ${b.bay}, ${b.when}. Check the staff screen.`,
+  };
+}
+
+export function earlyRequested(b: { bay: string; when: string }): Msg {
+  return {
+    subject: `Early start requested: ${b.bay}, ${b.when}`,
+    text: `Hi {{first_name}},\n\nWe have your request for an early start: ${b.bay}, ${b.when}. Someone needs to be here to open up, so we'll confirm by text as soon as we can.\n\n${SIGNOFF}`,
+    sms: `OTG: Got your early start request for ${b.bay}, ${b.when}. We'll text you once it's confirmed.`,
+  };
+}
+
+export function earlyDeclined(b: { bay: string; when: string }): Msg {
+  return {
+    subject: `Early start not available: ${b.bay}, ${b.when}`,
+    text: `Hi {{first_name}},\n\nSorry, we can't open early for ${b.bay}, ${b.when}. Book a time after opening at ${BOOK_URL()}\n\n${SIGNOFF}`,
+    sms: `OTG: Sorry, we can't open early for ${b.bay}, ${b.when}. Book another time at ${BOOK_URL()}`,
+  };
+}
+
+export function ownerEarlyRequest(r: { name: string | null; number: string | null; bay: string; when: string; staffUrl: string }): Msg {
+  const who = `${r.name || "A member"}${r.number ? ` (${r.number})` : ""}`;
+  return {
+    subject: `Early start request: ${who}, ${r.when}`,
+    text: `${who} asked for an early start: ${r.bay}, ${r.when}.\n\nApprove or decline it on the staff screen: ${r.staffUrl}\nIf nobody answers, it lapses at the start time.`,
+    sms: `OTG: Early start request - ${who}, ${r.bay}, ${r.when}. Approve on the staff screen.`,
+  };
+}
+
+export function noShowNotice(b: { bay: string; when: string; feeCents: number; minutes: number }): Msg {
+  const fee = b.feeCents ? ` A ${money(b.feeCents)} missed-booking fee will be added to your next membership bill.` : "";
+  return {
+    subject: `We missed you: ${b.bay}, ${b.when}`,
+    text: `Hi {{first_name}},\n\nWe didn't see you check in within ${b.minutes} minutes for ${b.bay}, ${b.when}, so we released the bay to other players.${fee}\n\nIf you're here, scan the code at the front desk; if the bay is still free, we'll put your booking back and drop the fee.\n\n${SIGNOFF}`,
+    sms: `OTG: We released ${b.bay} (${b.when}) after ${b.minutes} min with no check-in.${b.feeCents ? ` ${money(b.feeCents)} fee applies.` : ""} Here now? Scan the desk code.`,
   };
 }

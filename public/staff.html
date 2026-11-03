@@ -23,7 +23,11 @@
   td.closed { background:#f3f0ea; }
   .b { display:block; width:100%; text-align:left; padding:4px 6px; font-weight:normal; font-size:12px; background:#e7efe9; color:#1b2a22; }
   .b.block { background:#efe4cc; } .b.pending_payment { background:#fff3d6; } .b.paid_conflict { background:#f6d6d0; }
-  .b.cancelled { background:#f3f0ea; color:#999; text-decoration:line-through; }
+  .b.cancelled, .b.declined { background:#f3f0ea; color:#999; text-decoration:line-through; }
+  .b.no_show { background:#f6d6d0; } .b.requested { background:#fff3d6; border:1px dashed #c4a26a; }
+  .b.in { box-shadow:inset 3px 0 0 #2e7d4f; }
+  #qr { background:#fff; padding:12px; display:inline-block; }
+  @media print { header, .wrap, .grid, #cfgbox, #flash, #qrbox p, #qrbox button { display:none !important; } #qrbox { border:0; text-align:center; } #qrbox h2 { font-size:28px; } }
   .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:16px; margin-top:16px; }
   section { background:#fff; border:1px solid var(--line); padding:14px; }
   section h2 { font:normal 18px Georgia, serif; margin:0 0 8px; }
@@ -58,8 +62,9 @@
     <section id="detailbox" class="hidden">
       <h2>Booking</h2>
       <div id="detail"></div>
+      <p class="row" id="actions"><button id="checkinBtn">They're here</button><button id="approveBtn">Approve early start</button><button class="plain" id="declineBtn">Decline</button></p>
       <p class="row"><label style="flex:0 0 auto;margin:0"><input type="checkbox" id="refund" checked> Refund what they paid</label></p>
-      <button id="cancelBtn">Cancel this booking</button>
+      <button class="plain" id="cancelBtn">Cancel this booking</button>
     </section>
 
     <section>
@@ -93,7 +98,14 @@
     </section>
   </div>
 
-  <section style="margin-top:16px">
+  <section style="margin-top:16px" id="qrbox">
+    <h2>Scan to check in</h2>
+    <p style="color:var(--muted);font-size:13px">Print this and put it at the front desk. Players scan it with their phone camera when they arrive. Bookings with no check-in 15 minutes after the start are released.</p>
+    <div id="qr"></div>
+    <p><button class="plain" id="printQr">Print</button></p>
+  </section>
+
+  <section style="margin-top:16px" id="cfgbox">
     <h2>Rules and prices</h2>
     <p style="color:var(--muted);font-size:13px">Only list what you want to change from the defaults shown underneath. Example: <code>{"rates_cents":{"prime":8000},"holidays":["2026-12-25"]}</code>. Times are "HH:MM", prices are in cents.</p>
     <textarea id="cfg"></textarea>
@@ -101,6 +113,7 @@
     <details><summary>Current rules (defaults plus your changes)</summary><pre id="eff" style="font-size:12px;white-space:pre-wrap"></pre></details>
   </section>
 </main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
 (function () {
   var $ = function (id) { return document.getElementById(id); };
@@ -149,7 +162,8 @@
         data.bookings.filter(function (b) { return b.bay_id === bay.id && toMin(b.start) === m; }).forEach(function (b) {
           var el = document.createElement("button"); el.className = "b " + (b.kind === "block" ? "block" : b.status);
           var label = b.kind === "block" ? (b.note || "Blocked") : (b.name || b.phone || b.note || "Walk-in");
-          el.textContent = ampm(b.start) + "-" + ampm(b.end) + " " + label + (b.member_number ? " (" + b.member_number + ")" : "");
+          if (b.checked_in_at && b.status === "confirmed") el.className += " in";
+          el.textContent = ampm(b.start) + "-" + ampm(b.end) + " " + label + (b.member_number ? " (" + b.member_number + ")" : "") + (b.status === "requested" ? " · EARLY?" : b.status === "no_show" ? " · missed" : b.checked_in_at ? " · here" : "");
           el.onclick = function () { show(b); };
           td.appendChild(el);
         });
@@ -167,7 +181,10 @@
       ampm(b.start) + " to " + ampm(b.end) + " · " + (data.bays.filter(function (x) { return x.id === b.bay_id; })[0] || {}).name,
       b.kind === "block" ? "" : "Plan: " + (b.plan || "none") + " · Players: " + (b.guests + 1),
       b.kind === "block" ? "" : "Price " + money(b.price_cents) + " · Paid online " + money(b.paid_cents) + (b.refunded_cents ? " · Refunded " + money(b.refunded_cents) : ""),
-      "Status: " + b.status.replace("_", " ") + (b.source === "staff" ? " (booked by staff)" : ""),
+      "Status: " + ({ no_show: "missed (no check-in)", requested: "early start, waiting for you", pending_payment: "waiting for payment" }[b.status] || b.status.replace("_", " ")) + (b.source === "staff" ? " (booked by staff)" : "") + (b.checked_in_at ? " · checked in" : ""),
+      b.guest_passes_used ? "Guest passes used: " + b.guest_passes_used : "",
+      b.guest_fee_cents ? "Guest fee: " + money(b.guest_fee_cents) : "",
+      b.no_show_fee_cents ? "Missed-booking fee: " + money(b.no_show_fee_cents) + " (added to their next membership bill)" : "",
       b.kind !== "block" && b.note ? "Note: " + b.note : "",
     ].filter(Boolean);
     $("detail").textContent = lines.join("\n");
@@ -175,6 +192,25 @@
     $("cancelBtn").disabled = b.status === "cancelled";
     $("cancelBtn").textContent = b.kind === "block" ? "Remove this block" : "Cancel this booking";
     $("cancelBtn").dataset.armed = "";
+    var isBooking = b.kind !== "block";
+    $("checkinBtn").classList.toggle("hidden", !isBooking || b.checked_in_at && b.status === "confirmed" || ["confirmed", "no_show"].indexOf(b.status) < 0);
+    $("checkinBtn").textContent = b.status === "no_show" ? "They're here after all" : "They're here";
+    $("approveBtn").classList.toggle("hidden", b.status !== "requested");
+    $("declineBtn").classList.toggle("hidden", b.status !== "requested");
+  }
+  function act(path, body, done) {
+    api("POST", "/api/staff/bookings/" + picked.id + path, body).then(function () { flash(done); $("detailbox").classList.add("hidden"); load(); }).catch(function (e) { flash(e.message, true); });
+  }
+  $("checkinBtn").onclick = function () { act("/checkin", {}, "Checked in."); };
+  $("approveBtn").onclick = function () { act("/early", { approve: true }, "Approved. They've been sent a confirmation."); };
+  $("declineBtn").onclick = function () { act("/early", { approve: false }, "Declined. They've been told."); };
+  $("printQr").onclick = function () { window.print(); };
+  function loadQr() {
+    return api("GET", "/api/staff/checkin-code").then(function (j) {
+      $("qr").innerHTML = "";
+      if (!j.url || !window.QRCode) { $("qr").textContent = j.url || "No check-in code yet."; return; }
+      new QRCode($("qr"), { text: j.url, width: 220, height: 220 });
+    }).catch(function () {});
   }
   $("cancelBtn").onclick = function () {
     var btn = $("cancelBtn");
@@ -201,14 +237,14 @@
     api("PUT", "/api/staff/settings", { overrides: v }).then(function (j) { flash("Saved."); $("eff").textContent = JSON.stringify(j.effective, null, 2); load(); }).catch(function (e) { flash(e.message, true); });
   };
 
-  $("savekey").onclick = function () { key = $("key").value.trim(); try { localStorage.setItem("otgStaffKey", key); } catch (e) {} load(); loadCfg(); };
+  $("savekey").onclick = function () { key = $("key").value.trim(); try { localStorage.setItem("otgStaffKey", key); } catch (e) {} load(); loadCfg(); loadQr(); };
   $("date").value = todayEt();
   $("date").onchange = load;
   $("prev").onclick = function () { $("date").value = shift($("date").value, -1); load(); };
   $("next").onclick = function () { $("date").value = shift($("date").value, 1); load(); };
   $("today").onclick = function () { $("date").value = todayEt(); load(); };
   if (!key) $("keybox").classList.remove("hidden");
-  load(); loadCfg();
+  load(); loadCfg(); loadQr();
   setInterval(load, 60000);
 })();
 </script>

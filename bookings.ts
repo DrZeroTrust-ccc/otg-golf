@@ -6,17 +6,22 @@ import { pool, logEvent } from "./db.js";
 import { startSignIn, verifySignIn, signOut, currentPlayerId } from "./auth.js";
 import { notifyCustomer, notifyOwner, kickOutbox } from "./notify.js";
 import { normalizePhone, normalizeEmail } from "./stripeHandlers.js";
-import { openingDay, formatMemberNumber, bookingConfirmed, bookingCancelled, bookingReminder, ownerBookingConflict } from "./templates.js";
+import {
+  openingDay, formatMemberNumber, money, bookingConfirmed, bookingCancelled, bookingReminder, ownerBookingConflict,
+  earlyRequested, earlyDeclined, ownerEarlyRequest, noShowNotice,
+} from "./templates.js";
 import {
   mergeSettings, ruleProblem, priceFor, slotPrice, bandAt, hoursFor, firstDay, lastDay, todayEt, etToUtc, etParts,
-  isDate, hm, fmtHm, addDays, describeSlot, type Settings, type Plan,
+  isDate, hm, fmtHm, addDays, describeSlot, earlyDeadline, isEarly, guestSplit, primePausedUntil, touchesPrime,
+  type Settings, type Plan,
 } from "./booking_rules.js";
 import { bookPage, staffPage, manifest, icon } from "./booking_pages.js";
 
 type Db = pg.Pool | pg.PoolClient;
 type Bay = { id: string; name: string; kind: "sim" | "putt"; premier: boolean; sort: number };
 
-const ACTIVE = `(b.status = 'confirmed' or (b.status = 'pending_payment' and b.hold_until > now()))`;
+// Bookings that hold their slot. An early-access request holds it while staff decide.
+const ACTIVE = `(b.status in ('confirmed','requested') or (b.status = 'pending_payment' and b.hold_until > now()))`;
 const baseUrl = () => process.env.PUBLIC_BASE_URL ?? "https://otg-ops.onrender.com";
 // STRIPE_API_BASE is for the automated test only (points Stripe calls at a local fake). Never set it on Render.
 const stripeClient = () => {
@@ -48,6 +53,30 @@ const whenOf = (b: { starts_at: Date; ends_at: Date }) => {
   return describeSlot(s.date, s.minutes, Math.round((new Date(b.ends_at).getTime() - new Date(b.starts_at).getTime()) / 60000));
 };
 
+// Guest passes the member has used in the calendar year of `date` (cancelled bookings give them back).
+async function passesUsed(db: Db, playerId: string, date: string): Promise<number> {
+  const y = date.slice(0, 4);
+  const r = await db.query(
+    `select coalesce(sum(b.guest_passes_used), 0)::int n from bookings b
+      where b.player_id = $1 and b.kind = 'booking' and (${ACTIVE} or b.status = 'no_show')
+        and b.starts_at >= $2 and b.starts_at < $3`,
+    [playerId, etToUtc(`${y}-01-01`, 0), etToUtc(`${Number(y) + 1}-01-01`, 0)]);
+  return r.rows[0].n;
+}
+
+// When Prime booking is paused for this player because of missed bookings, or null.
+async function pausedUntil(db: Db, s: Settings, playerId: string | null): Promise<Date | null> {
+  if (!playerId) return null;
+  const r = await db.query(
+    `select coalesce(no_show_at, cancelled_at) as at from bookings
+      where player_id = $1 and kind = 'booking'
+        and ((status = 'no_show' and not no_show_waived) or late_cancel)
+        and coalesce(no_show_at, cancelled_at) > now() - ($2 || ' days')::interval`,
+    [playerId, String(s.strikes.window_days)]);
+  return primePausedUntil(s, r.rows.map((x) => new Date(x.at)));
+}
+const dateText = (d: Date) => d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "America/New_York" });
+
 // ---- availability ----------------------------------------------------------------
 
 async function dayView(date: string, playerId: string | null) {
@@ -60,25 +89,29 @@ async function dayView(date: string, playerId: string | null) {
       where ${ACTIVE} and b.starts_at < $2 and b.ends_at > $1`,
     [etToUtc(date, 0), etToUtc(addDays(date, 1), 0)])).rows;
   const now = Date.now();
+  // Members see the hour before opening as "early" slots they can ask for, until the deadline.
+  const earlyFrom = hours && plan !== "none" && now < earlyDeadline(s, date).getTime() ? hours[0] - s.early_access_minutes : hours?.[0] ?? 0;
   const out = bays.map((bay) => {
     const slots: { t: string; state: string; price: number; band: string }[] = [];
-    if (hours) for (let m = hours[0]; m < hours[1]; m += s.slot_minutes) {
+    if (hours) for (let m = earlyFrom; m < hours[1]; m += s.slot_minutes) {
       const at = etToUtc(date, m).getTime();
       const hit = taken.find((t) => t.bay_id === bay.id && new Date(t.starts_at).getTime() <= at && new Date(t.ends_at).getTime() > at);
       let state = "open";
       if (hit) state = playerId && hit.player_id === playerId ? "mine" : "taken";
       else if (at <= now) state = "past";
       else if (bay.premier && plan === "none" && (bandAt(s, date, m) === "prime" || at - now > s.premier_nonmember_within_hours * 3600_000)) state = "members";
+      else if (m < hours[0]) state = "early";
       slots.push({ t: fmtHm(m), state, price: slotPrice(s, bay, plan, date, m), band: bandAt(s, date, m) });
     }
     return { id: bay.id, name: bay.name, kind: bay.kind, premier: bay.premier, slots };
   });
-  return { settings: s, plan, hours, bays: out };
+  const guests = playerId ? guestSplit(s, plan, 0, await passesUsed(pool, playerId, date)) : { left: 0 };
+  return { settings: s, plan, hours, bays: out, passesLeft: guests.left, pausedUntil: await pausedUntil(pool, s, playerId) };
 }
 
 async function myBookings(playerId: string) {
   return (await pool.query(
-    `select b.id, b.starts_at, b.ends_at, b.status, b.price_cents, b.paid_cents, b.guests, bay.name as bay
+    `select b.id, b.starts_at, b.ends_at, b.status, b.price_cents, b.paid_cents, b.guests, b.checked_in_at, b.early, bay.name as bay
        from bookings b join bays bay on bay.id = b.bay_id
       where b.player_id = $1 and b.kind = 'booking' and b.ends_at > now() and ${ACTIVE}
       order by b.starts_at`, [playerId])).rows.map((b) => ({ ...b, when: whenOf(b) }));
@@ -118,7 +151,12 @@ async function createAppBooking(playerId: string, nb: NewBooking): Promise<{ sta
   const plan = await planOf(pool, playerId);
   const problem = ruleProblem(s, plan, { bay, date: nb.date, start: nb.start, minutes: nb.minutes, guests: nb.guests }, openingDay());
   if (problem) return { status: 400, body: { error: problem } };
-  const price = priceFor(s, bay, plan, nb.date, nb.start, nb.minutes);
+  const paused = touchesPrime(s, nb.date, nb.start, nb.minutes) ? await pausedUntil(pool, s, playerId) : null;
+  if (paused) return { status: 400, body: { error: `After ${s.strikes.limit} missed bookings, Prime times are paused for you until ${dateText(paused)}. Other times are open as usual.` } };
+  const guest = guestSplit(s, plan, nb.guests, plan === "none" ? 0 : await passesUsed(pool, playerId, nb.date));
+  const price = priceFor(s, bay, plan, nb.date, nb.start, nb.minutes) + guest.feeCents;
+  const early = isEarly(s, nb.date, nb.start);
+  if (early && price) return { status: 400, body: { error: "Early starts are for times your plan already covers. Call us and we'll see what we can do." } };
   const from = etToUtc(nb.date, nb.start), to = etToUtc(nb.date, nb.start + nb.minutes);
   const stripe = price ? stripeClient() : null;
   if (price && !stripe) return { status: 503, body: { error: "Online payment isn't available right now. Call us to book." } };
@@ -137,18 +175,25 @@ async function createAppBooking(playerId: string, nb: NewBooking): Promise<{ sta
       await c.query("rollback");
       return { status: 409, body: { error: "Someone just took that time. Pick another." } };
     }
+    const status = early ? "requested" : price ? "pending_payment" : "confirmed";
     id = (await c.query(
-      `insert into bookings (bay_id, player_id, starts_at, ends_at, status, plan, guests, price_cents, hold_until)
-       values ($1,$2,$3,$4,$5,$6,$7,$8, case when $5 = 'pending_payment' then now() + interval '32 minutes' end) returning id`,
-      [bay.id, playerId, from, to, price ? "pending_payment" : "confirmed", plan, nb.guests, price])).rows[0].id;
-    await logEvent(c, "booking.created", { booking_id: id, player_id: playerId, bay: bay.id, starts_at: from, minutes: nb.minutes, plan, price_cents: price });
-    if (!price) await notifyCustomer(c, `booking:${id}`, playerId, bookingConfirmed({ bay: bay.name, when: describeSlot(nb.date, nb.start, nb.minutes), priceCents: 0, guests: nb.guests }));
+      `insert into bookings (bay_id, player_id, starts_at, ends_at, status, plan, guests, price_cents, hold_until, guest_passes_used, guest_fee_cents, early)
+       values ($1,$2,$3,$4,$5,$6,$7,$8, case when $5 = 'pending_payment' then now() + interval '32 minutes' end, $9, $10, $11) returning id`,
+      [bay.id, playerId, from, to, status, plan, nb.guests, price, guest.passes, guest.feeCents, early])).rows[0].id;
+    await logEvent(c, "booking.created", { booking_id: id, player_id: playerId, bay: bay.id, starts_at: from, minutes: nb.minutes, plan, price_cents: price, guest_passes: guest.passes, early });
+    const when = describeSlot(nb.date, nb.start, nb.minutes);
+    if (early) {
+      await notifyCustomer(c, `booking-early:${id}`, playerId, earlyRequested({ bay: bay.name, when }));
+      const who = (await c.query("select name, member_number from players where id = $1", [playerId])).rows[0];
+      await notifyOwner(c, `booking-early-owner:${id}`, ownerEarlyRequest({ name: who?.name ?? null, number: formatMemberNumber(who?.member_number), bay: bay.name, when, staffUrl: `${baseUrl()}/staff` }), { playerId });
+    } else if (!price) await notifyCustomer(c, `booking:${id}`, playerId, bookingConfirmed({ bay: bay.name, when, priceCents: 0, guests: nb.guests }));
     await c.query("commit");
   } catch (e) {
     await c.query("rollback").catch(() => {});
     throw e;
   } finally { c.release(); }
 
+  if (early) { kickOutbox(); return { status: 200, body: { ok: true, booking_id: id, requested: true } }; }
   if (!price) { kickOutbox(); return { status: 200, body: { ok: true, booking_id: id, confirmed: true } }; }
 
   try {
@@ -157,7 +202,10 @@ async function createAppBooking(playerId: string, nb: NewBooking): Promise<{ sta
     const session = await stripe!.checkout.sessions.create({
       mode: "payment",
       customer,
-      line_items: [{ quantity: 1, price_data: { currency: "usd", unit_amount: price, product_data: { name: `${bay.name}, ${describeSlot(nb.date, nb.start, nb.minutes)}` } } }],
+      line_items: [{ quantity: 1, price_data: { currency: "usd", unit_amount: price, product_data: {
+        name: `${bay.name}, ${describeSlot(nb.date, nb.start, nb.minutes)}`,
+        ...(guest.feeCents ? { description: `Includes ${money(guest.feeCents)} for ${nb.guests - guest.passes} guest${nb.guests - guest.passes > 1 ? "s" : ""} beyond your guest passes` } : {}),
+      } } }],
       metadata: meta,
       payment_intent_data: { metadata: meta },
       expires_at: Math.floor(Date.now() / 1000) + 31 * 60,
@@ -212,12 +260,14 @@ async function cancelBooking(id: string, by: { playerId?: string; staff?: boolea
   const b = (await pool.query(
     `select b.*, bay.name as bay_name from bookings b join bays bay on bay.id = b.bay_id where b.id = $1`, [id])).rows[0];
   if (!b || (by.playerId && b.player_id !== by.playerId)) return { status: 404, body: { error: "Booking not found." } };
-  if (!["confirmed", "pending_payment", "paid_conflict"].includes(b.status)) return { status: 400, body: { error: "That booking is already cancelled." } };
+  if (!["confirmed", "pending_payment", "paid_conflict", "requested"].includes(b.status)) return { status: 400, body: { error: "That booking is already cancelled." } };
   if (!by.staff && new Date(b.starts_at).getTime() <= Date.now()) return { status: 400, body: { error: "That booking has already started. Talk to the front desk." } };
 
   const refundable = b.paid_cents - b.refunded_cents;
   const hoursAhead = (new Date(b.starts_at).getTime() - Date.now()) / 3600_000;
   const refund = refundable > 0 && (by.staff ? by.refund !== false : hoursAhead >= s.refund_cutoff_hours) ? refundable : 0;
+  // A member letting a slot go at the last minute counts toward the missed-booking strikes.
+  const late = !by.staff && s.late_cancel_strike && b.status === "confirmed" && b.plan && b.plan !== "none" && hoursAhead < s.refund_cutoff_hours;
   if (refund) {
     const stripe = stripeClient();
     if (!stripe || !b.stripe_payment_intent) return { status: 502, body: { error: "We couldn't refund this automatically. Call us and we'll sort it." } };
@@ -235,16 +285,86 @@ async function cancelBooking(id: string, by: { playerId?: string; staff?: boolea
   try {
     await c.query("begin");
     await c.query(
-      `update bookings set status = 'cancelled', hold_until = null, cancelled_at = now(), cancelled_by = $2, refunded_cents = refunded_cents + $3 where id = $1`,
-      [b.id, by.staff ? "staff" : "player", refund]);
-    await logEvent(c, "booking.cancelled", { booking_id: b.id, by: by.staff ? "staff" : "player", refund_cents: refund });
+      `update bookings set status = 'cancelled', hold_until = null, cancelled_at = now(), cancelled_by = $2, refunded_cents = refunded_cents + $3, late_cancel = $4 where id = $1`,
+      [b.id, by.staff ? "staff" : "player", refund, !!late]);
+    await logEvent(c, "booking.cancelled", { booking_id: b.id, by: by.staff ? "staff" : "player", refund_cents: refund, late_cancel: !!late });
     if (b.status === "confirmed" && b.player_id && b.kind === "booking") {
       await notifyCustomer(c, `booking-cancel:${b.id}`, b.player_id, bookingCancelled({ bay: b.bay_name, when: whenOf(b), refundCents: refund, byStaff: !!by.staff }));
     }
     await c.query("commit");
   } catch (e) { await c.query("rollback").catch(() => {}); throw e; } finally { c.release(); }
   kickOutbox();
-  return { status: 200, body: { ok: true, refunded_cents: refund } };
+  return { status: 200, body: { ok: true, refunded_cents: refund, late_cancel: !!late } };
+}
+
+// ---- check-in, no-shows, early access ---------------------------------------------
+
+async function checkinCode(): Promise<string | null> {
+  return (await pool.query("select checkin_code from booking_settings where id = 1")).rows[0]?.checkin_code ?? null;
+}
+
+// Mark a booking as arrived. A no-show whose bay is still free is put back, and its fee and strike dropped.
+async function arrive(b: { id: string; status: string; bay_id: string; starts_at: Date; ends_at: Date; no_show_invoice_item: string | null }, by: "qr" | "staff"): Promise<string | null> {
+  const c = await pool.connect();
+  try {
+    await c.query("begin");
+    if (b.status === "no_show" && !(await lockAndCheckFree(c, b.bay_id, b.starts_at, b.ends_at, b.id))) {
+      await c.query("rollback");
+      return "Your bay was released and someone else has it now. See the front desk.";
+    }
+    await c.query(
+      `update bookings set status = 'confirmed', checked_in_at = coalesce(checked_in_at, now()), checked_in_by = coalesce(checked_in_by, $2),
+              no_show_waived = (status = 'no_show') or no_show_waived where id = $1`, [b.id, by]);
+    await logEvent(c, "booking.checked_in", { booking_id: b.id, by, was_no_show: b.status === "no_show" });
+    await c.query("commit");
+  } catch (e) { await c.query("rollback").catch(() => {}); throw e; } finally { c.release(); }
+  if (b.status === "no_show") await dropNoShowFee(b.id, b.no_show_invoice_item);
+  return null;
+}
+
+async function dropNoShowFee(id: string, item: string | null) {
+  if (!item) return;
+  try {
+    await stripeClient()?.invoiceItems.del(item);
+    await pool.query("update bookings set no_show_fee_cents = 0, no_show_invoice_item = null where id = $1", [id]);
+  } catch (e) {
+    // Already on an invoice: staff refund it by hand in Stripe.
+    await logEvent(pool, "booking.no_show_fee_undo_failed", { booking_id: id, error: (e as Error).message });
+  }
+}
+
+async function chargeNoShowFee(s: Settings, b: { id: string; player_id: string; when: string }): Promise<number> {
+  const stripe = stripeClient();
+  const cus = (await pool.query("select stripe_customer_id from players where id = $1", [b.player_id])).rows[0]?.stripe_customer_id;
+  if (!stripe || !cus) return 0;
+  try {
+    // Added to the member's next membership bill rather than charged on the spot.
+    const item = await stripe.invoiceItems.create(
+      { customer: cus, amount: s.no_show_fee_cents, currency: "usd", description: `Missed booking: ${b.when}`, metadata: { booking_id: b.id } },
+      { idempotencyKey: `no-show-fee-${b.id}` });
+    await pool.query("update bookings set no_show_fee_cents = $2, no_show_invoice_item = $3 where id = $1", [b.id, s.no_show_fee_cents, item.id]);
+    return s.no_show_fee_cents;
+  } catch (e) {
+    await logEvent(pool, "booking.no_show_fee_failed", { booking_id: b.id, error: (e as Error).message });
+    return 0;
+  }
+}
+
+async function noShows(s: Settings) {
+  // Only bookings made through the app or for a known player; a walk-in with no name has nobody to chase.
+  const rows = (await pool.query(
+    `update bookings b set status = 'no_show', no_show_at = now() from bays bay
+      where bay.id = b.bay_id and b.kind = 'booking' and b.status = 'confirmed' and b.player_id is not null
+        and b.checked_in_at is null and b.starts_at <= now() - ($1 || ' minutes')::interval
+        and b.starts_at > now() - interval '1 day'
+      returning b.id, b.player_id, b.plan, b.starts_at, b.ends_at, bay.name as bay_name`, [String(s.no_show_after_minutes)])).rows;
+  for (const b of rows) {
+    const when = whenOf(b);
+    const member = b.plan && b.plan !== "none";
+    const fee = member && s.no_show_fees_on ? await chargeNoShowFee(s, { id: b.id, player_id: b.player_id, when }) : 0;
+    await logEvent(pool, "booking.no_show", { booking_id: b.id, player_id: b.player_id, fee_cents: fee });
+    await notifyCustomer(pool, `booking-noshow:${b.id}`, b.player_id, noShowNotice({ bay: b.bay_name, when, feeCents: fee, minutes: s.no_show_after_minutes }));
+  }
 }
 
 // ---- once a minute ---------------------------------------------------------------
@@ -252,6 +372,13 @@ async function cancelBooking(id: string, by: { playerId?: string; staff?: boolea
 export async function bookingTick() {
   await pool.query(`update bookings set status = 'expired', hold_until = null where status = 'pending_payment' and hold_until <= now()`);
   const s = await loadSettings();
+  // Early-access requests nobody answered before the start time.
+  const lapsed = (await pool.query(
+    `update bookings b set status = 'declined' from bays bay
+      where bay.id = b.bay_id and b.status = 'requested' and b.starts_at <= now()
+      returning b.id, b.player_id, b.starts_at, b.ends_at, bay.name as bay_name`)).rows;
+  for (const b of lapsed) await notifyCustomer(pool, `booking-early-declined:${b.id}`, b.player_id, earlyDeclined({ bay: b.bay_name, when: whenOf(b) }), { smsOnly: true });
+  await noShows(s);
   const due = (await pool.query(
     `update bookings b set reminded_at = now() from bays bay
       where bay.id = b.bay_id and b.kind = 'booking' and b.status = 'confirmed' and b.reminded_at is null and b.player_id is not null
@@ -312,7 +439,13 @@ export function mountBookings(app: Express) {
     if (first) for (let d = from; d <= to; d = addDays(d, 1)) days.push(d);
     if (!pid) return res.json({ signed_in: false, plan, open: !!first, days });
     const p = (await pool.query("select name, phone, email, member_number from players where id = $1", [pid])).rows[0];
-    res.json({ signed_in: true, plan, open: !!first, days, name: p?.name ?? null, member_number: formatMemberNumber(p?.member_number), bookings: await myBookings(pid), refund_cutoff_hours: s.refund_cutoff_hours });
+    const paused = await pausedUntil(pool, s, pid);
+    const passes = plan === "none" ? null : guestSplit(s, plan, 0, await passesUsed(pool, pid, today)).left;
+    res.json({
+      signed_in: true, plan, open: !!first, days, name: p?.name ?? null, member_number: formatMemberNumber(p?.member_number),
+      bookings: await myBookings(pid), refund_cutoff_hours: s.refund_cutoff_hours,
+      guest_passes_left: passes, guest_fee_cents: s.guest_fee_cents, prime_paused_until: paused ? dateText(paused) : null,
+    });
   }));
 
   app.get("/api/availability", wrap(async (req, res) => {
@@ -324,7 +457,8 @@ export function mountBookings(app: Express) {
     res.json({
       date, plan: v.plan, hours: v.hours && { open: fmtHm(v.hours[0]), close: fmtHm(v.hours[1]) }, slot_minutes: s.slot_minutes,
       min_minutes: { sim: s.min_minutes_sim, putt: s.min_minutes_putt }, max_minutes: s.plans[v.plan].max_minutes, max_guests: s.max_guests,
-      bays: v.bays,
+      bays: v.bays, guest_passes_left: v.passesLeft, guest_fee_cents: s.guest_fee_cents,
+      prime_paused: !!v.pausedUntil, early_deadline: fmtHm(hm(s.early_access_deadline)),
     });
   }));
 
@@ -356,15 +490,65 @@ export function mountBookings(app: Express) {
     res.json({ ok: true });
   }));
 
+  // Scanned from the QR code at the front desk: checks the player in to their booking that's on now
+  // (or starting within checkin_opens_minutes).
+  app.post("/api/checkin", json, wrap(async (req, res) => {
+    const pid = await currentPlayerId(req);
+    if (!pid) return res.status(401).json({ error: "Sign in first." });
+    const code = await checkinCode();
+    if (!code || (req.body ?? {}).code !== code) return res.status(400).json({ error: "That check-in code isn't right. Scan the code at the front desk again." });
+    const s = await loadSettings();
+    const b = (await pool.query(
+      `select b.id, b.status, b.bay_id, b.starts_at, b.ends_at, b.checked_in_at, b.no_show_invoice_item, bay.name as bay_name
+         from bookings b join bays bay on bay.id = b.bay_id
+        where b.player_id = $1 and b.kind = 'booking' and b.status in ('confirmed','no_show') and b.ends_at > now()
+          and b.starts_at <= now() + ($2 || ' minutes')::interval
+        order by b.starts_at limit 1`, [pid, String(s.checkin_opens_minutes)])).rows[0];
+    if (!b) return res.status(404).json({ error: "We can't find a booking for you right now. The front desk can help." });
+    if (b.checked_in_at && b.status === "confirmed") return res.json({ ok: true, bay: b.bay_name, when: whenOf(b), already: true });
+    const problem = await arrive(b, "qr");
+    if (problem) return res.status(409).json({ error: problem });
+    res.json({ ok: true, bay: b.bay_name, when: whenOf(b) });
+  }));
+
   // ---- staff ----
+  app.get("/api/staff/checkin-code", staffOnly, wrap(async (_req, res) => {
+    const code = await checkinCode();
+    res.json({ code, url: code ? `${baseUrl()}/book?here=${code}` : null });
+  }));
+
+  app.post("/api/staff/bookings/:id/checkin", staffOnly, wrap(async (req, res) => {
+    const b = (await pool.query("select id, status, bay_id, starts_at, ends_at, no_show_invoice_item from bookings where id = $1 and kind = 'booking'", [req.params.id])).rows[0];
+    if (!b || !["confirmed", "no_show"].includes(b.status)) return res.status(400).json({ error: "Only a confirmed or missed booking can be checked in." });
+    const problem = await arrive(b, "staff");
+    if (problem) return res.status(409).json({ error: "That bay has been given to someone else since. Book them another bay." });
+    res.json({ ok: true });
+  }));
+
+  // Approve or decline an early-access request.
+  app.post("/api/staff/bookings/:id/early", staffOnly, json, wrap(async (req, res) => {
+    const approve = (req.body ?? {}).approve === true;
+    const b = (await pool.query(
+      `update bookings b set status = $2 from bays bay where bay.id = b.bay_id and b.id = $1 and b.status = 'requested'
+        returning b.id, b.player_id, b.starts_at, b.ends_at, b.guests, bay.name as bay_name`, [req.params.id, approve ? "confirmed" : "declined"])).rows[0];
+    if (!b) return res.status(400).json({ error: "That request has already been answered." });
+    await logEvent(pool, approve ? "booking.early_approved" : "booking.early_declined", { booking_id: b.id });
+    const when = whenOf(b);
+    await notifyCustomer(pool, `booking${approve ? "" : "-early-declined"}:${b.id}`, b.player_id,
+      approve ? bookingConfirmed({ bay: b.bay_name, when, priceCents: 0, guests: b.guests, early: true }) : earlyDeclined({ bay: b.bay_name, when }));
+    kickOutbox();
+    res.json({ ok: true });
+  }));
+
   app.get("/api/staff/day", staffOnly, wrap(async (req, res) => {
     const date = isDate(req.query.date) ? req.query.date : todayEt();
     const s = await loadSettings();
     const rows = (await pool.query(
       `select b.id, b.kind, b.bay_id, b.starts_at, b.ends_at, b.status, b.source, b.plan, b.guests, b.price_cents, b.paid_cents, b.refunded_cents, b.note,
+              b.checked_in_at, b.no_show_fee_cents, b.no_show_waived, b.guest_passes_used, b.guest_fee_cents, b.early,
               p.name, p.phone, p.email, p.member_number
          from bookings b left join players p on p.id = b.player_id
-        where b.starts_at < $2 and b.ends_at > $1 and b.status in ('confirmed','pending_payment','paid_conflict','cancelled')
+        where b.starts_at < $2 and b.ends_at > $1 and b.status in ('confirmed','pending_payment','paid_conflict','cancelled','no_show','requested','declined')
         order by b.starts_at`, [etToUtc(date, 0), etToUtc(addDays(date, 1), 0)])).rows;
     res.json({
       date, hours: hoursFor(s, date)?.map(fmtHm) ?? null, bays: await loadBays(),
@@ -418,8 +602,10 @@ export function mountBookings(app: Express) {
       if (!(await lockAndCheckFree(c, bay.id, from, to))) { await c.query("rollback"); return res.status(409).json({ error: "That bay is already booked then." }); }
       const note = [name && !pid ? name : null, price ? "Pay at desk" : null, nb.note].filter(Boolean).join(" | ") || null;
       id = (await c.query(
-        `insert into bookings (bay_id, player_id, starts_at, ends_at, status, source, plan, guests, price_cents, note)
-         values ($1,$2,$3,$4,'confirmed','staff',$5,$6,$7,$8) returning id`,
+        `insert into bookings (bay_id, player_id, starts_at, ends_at, status, source, plan, guests, price_cents, note, checked_in_at, checked_in_by)
+         values ($1,$2,$3,$4,'confirmed','staff',$5,$6,$7,$8,
+                 case when $3::timestamptz <= now() + interval '30 minutes' then now() end,
+                 case when $3::timestamptz <= now() + interval '30 minutes' then 'staff' end) returning id`,
         [bay.id, pid, from, to, plan, Math.max(0, nb.guests), price, note])).rows[0].id;
       await logEvent(c, "booking.created", { booking_id: id, player_id: pid, bay: bay.id, starts_at: from, minutes: nb.minutes, plan, price_cents: price, source: "staff" });
       if (pid) await notifyCustomer(c, `booking:${id}`, pid, bookingConfirmed({ bay: bay.name, when: describeSlot(nb.date, nb.start, nb.minutes), priceCents: 0, guests: Math.max(0, nb.guests) }));
