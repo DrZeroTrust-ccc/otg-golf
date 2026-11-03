@@ -43,7 +43,9 @@ export const DEFAULTS = {
   refund_cutoff_hours: 24,                         // paid bookings cancelled this far ahead are refunded in full
   reminder_hours: 3,                               // reminder text this long before the start
   // Check-in and no-shows
-  checkin_opens_minutes: 30,                       // the desk QR checks you in from this long before your start
+  checkin_opens_minutes: 30,                       // "I'm here" works from this long before your start
+  // Where OTG is, for "I'm here" check-in. Set from the staff screen while standing in the building.
+  venue: { lat: null as number | null, lng: null as number | null, radius_m: 200 },
   no_show_after_minutes: 15,                       // not checked in by then: the bay is released
   no_show_fees_on: false,                          // off for the soft launch; turn on when ready
   no_show_fee_cents: 2000,                         // members only, added to their next membership bill
@@ -231,4 +233,21 @@ export function primePausedUntil(s: Settings, strikeTimes: Date[], now = new Dat
 export function touchesPrime(s: Settings, date: string, start: number, minutes: number): boolean {
   for (let m = start; m < start + minutes; m += s.slot_minutes) if (bandAt(s, date, m) === "prime") return true;
   return false;
+}
+
+// Distance in meters between two points (haversine).
+export function metersBetween(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const R = 6371000, rad = (x: number) => (x * Math.PI) / 180;
+  const dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// Is a phone reporting this position (accuracy in meters) at OTG? Indoors GPS is rough, so allow for
+// the phone's own stated accuracy, up to 150 m of it.
+export function atVenue(s: Settings, pos: { lat: number; lng: number; accuracy?: number }): boolean | null {
+  const v = s.venue;
+  if (typeof v?.lat !== "number" || typeof v?.lng !== "number") return null;
+  const slack = Math.min(Math.max(pos.accuracy ?? 0, 0), 150);
+  return metersBetween({ lat: v.lat, lng: v.lng }, pos) <= v.radius_m + slack;
 }

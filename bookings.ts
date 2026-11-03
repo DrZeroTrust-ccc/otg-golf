@@ -12,7 +12,7 @@ import {
 } from "./templates.js";
 import {
   mergeSettings, ruleProblem, priceFor, slotPrice, bandAt, hoursFor, firstDay, lastDay, todayEt, etToUtc, etParts,
-  isDate, hm, fmtHm, addDays, describeSlot, earlyDeadline, isEarly, guestSplit, primePausedUntil, touchesPrime,
+  isDate, hm, fmtHm, addDays, describeSlot, earlyDeadline, atVenue, isEarly, guestSplit, primePausedUntil, touchesPrime,
   type Settings, type Plan,
 } from "./booking_rules.js";
 import { bookPage, staffPage, manifest, icon } from "./booking_pages.js";
@@ -304,7 +304,7 @@ async function checkinCode(): Promise<string | null> {
 }
 
 // Mark a booking as arrived. A no-show whose bay is still free is put back, and its fee and strike dropped.
-async function arrive(b: { id: string; status: string; bay_id: string; starts_at: Date; ends_at: Date; no_show_invoice_item: string | null }, by: "qr" | "staff"): Promise<string | null> {
+async function arrive(b: { id: string; status: string; bay_id: string; starts_at: Date; ends_at: Date; no_show_invoice_item: string | null }, by: "qr" | "location" | "staff"): Promise<string | null> {
   const c = await pool.connect();
   try {
     await c.query("begin");
@@ -490,14 +490,27 @@ export function mountBookings(app: Express) {
     res.json({ ok: true });
   }));
 
-  // Scanned from the QR code at the front desk: checks the player in to their booking that's on now
-  // (or starting within checkin_opens_minutes).
+  // "I'm here": checks the player in to their booking that's on now (or starting within
+  // checkin_opens_minutes). Proof of being at OTG is the phone's location; a desk code also works.
   app.post("/api/checkin", json, wrap(async (req, res) => {
     const pid = await currentPlayerId(req);
     if (!pid) return res.status(401).json({ error: "Sign in first." });
-    const code = await checkinCode();
-    if (!code || (req.body ?? {}).code !== code) return res.status(400).json({ error: "That check-in code isn't right. Scan the code at the front desk again." });
     const s = await loadSettings();
+    const src = (req.body ?? {}) as Record<string, unknown>;
+    let how: "qr" | "location";
+    if (typeof src.lat === "number" && typeof src.lng === "number") {
+      const ok = atVenue(s, { lat: src.lat, lng: src.lng, accuracy: typeof src.accuracy === "number" ? src.accuracy : undefined });
+      if (ok === null) return res.status(400).json({ error: "Check-in by location isn't set up yet. The front desk will check you in." });
+      if (!ok) {
+        await logEvent(pool, "booking.checkin_too_far", { player_id: pid, accuracy: src.accuracy ?? null });
+        return res.status(400).json({ error: "It looks like you're not at On The Green yet. Try again once you're inside, or ask the front desk." });
+      }
+      how = "location";
+    } else {
+      const code = await checkinCode();
+      if (!code || src.code !== code) return res.status(400).json({ error: "We couldn't check you in. Ask the front desk." });
+      how = "qr";
+    }
     const b = (await pool.query(
       `select b.id, b.status, b.bay_id, b.starts_at, b.ends_at, b.checked_in_at, b.no_show_invoice_item, bay.name as bay_name
          from bookings b join bays bay on bay.id = b.bay_id
@@ -506,7 +519,7 @@ export function mountBookings(app: Express) {
         order by b.starts_at limit 1`, [pid, String(s.checkin_opens_minutes)])).rows[0];
     if (!b) return res.status(404).json({ error: "We can't find a booking for you right now. The front desk can help." });
     if (b.checked_in_at && b.status === "confirmed") return res.json({ ok: true, bay: b.bay_name, when: whenOf(b), already: true });
-    const problem = await arrive(b, "qr");
+    const problem = await arrive(b, how);
     if (problem) return res.status(409).json({ error: problem });
     res.json({ ok: true, bay: b.bay_name, when: whenOf(b) });
   }));
@@ -515,6 +528,22 @@ export function mountBookings(app: Express) {
   app.get("/api/staff/checkin-code", staffOnly, wrap(async (_req, res) => {
     const code = await checkinCode();
     res.json({ code, url: code ? `${baseUrl()}/book?here=${code}` : null });
+  }));
+
+  // Save OTG's location for "I'm here" check-in, taken from the staff member's phone while in the building.
+  app.post("/api/staff/venue", staffOnly, json, wrap(async (req, res) => {
+    const { lat, lng, radius_m } = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof lat !== "number" || typeof lng !== "number" || Math.abs(lat) > 90 || Math.abs(lng) > 180)
+      return res.status(400).json({ error: "We didn't get a location from this device." });
+    const radius = typeof radius_m === "number" && radius_m >= 50 && radius_m <= 1000 ? Math.round(radius_m) : undefined;
+    const r = await pool.query(
+      `update booking_settings set config = config || jsonb_build_object('venue',
+          coalesce(config->'venue', '{}'::jsonb) || jsonb_build_object('lat', $1::float8, 'lng', $2::float8)
+            || case when $3::int is null then '{}'::jsonb else jsonb_build_object('radius_m', $3::int) end),
+          updated_at = now()
+        where id = 1 returning config`, [lat, lng, radius ?? null]);
+    await logEvent(pool, "booking.venue_set", { lat, lng, radius_m: radius ?? null });
+    res.json({ ok: true, venue: mergeSettings(r.rows[0].config).venue });
   }));
 
   app.post("/api/staff/bookings/:id/checkin", staffOnly, wrap(async (req, res) => {

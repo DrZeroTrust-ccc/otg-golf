@@ -41,6 +41,7 @@ const nowT = new Date();
 const daysAgo = (n) => new Date(nowT.getTime() - n * 86400_000);
 check("3 misses in 60 days pause Prime", R.primePausedUntil(S, [daysAgo(1), daysAgo(10), daysAgo(20)], nowT) !== null);
 check("2 misses don't", R.primePausedUntil(S, [daysAgo(1), daysAgo(10)], nowT) === null);
+check("distance: 0.001 deg latitude is about 111 m", Math.abs(R.metersBetween({ lat: 38.7, lng: -77.6 }, { lat: 38.701, lng: -77.6 }) - 111) < 2);
 check("misses older than 60 days don't count", R.primePausedUntil(S, [daysAgo(1), daysAgo(10), daysAgo(70)], nowT) === null);
 
 // ---- fake Stripe ------------------------------------------------------------------
@@ -209,18 +210,28 @@ check("Founding member: 5 guests free", gC.status === 200 && gC.body.confirmed);
 
 // check-in by QR
 const code = (await q("select checkin_code from booking_settings where id = 1"))[0].checkin_code;
-check("a check-in code exists", typeof code === "string" && code.length >= 8);
-const qrUrl = await staff.get("/api/staff/checkin-code", staffH);
-check("staff screen gets the QR link", qrUrl.body.url?.endsWith(`/book?here=${code}`));
+check("a desk code exists (fallback)", typeof code === "string" && code.length >= 8);
 const ciM = await memberClient("full");
 const ciB = (await q(`insert into bookings (bay_id, player_id, starts_at, ends_at, status, plan)
   values ('putt', $1, now() + interval '10 minutes', now() + interval '70 minutes', 'confirmed', 'full') returning id`, [ciM.id]))[0].id;
 check("wrong desk code refused", (await ciM.cl.post("/api/checkin", { code: "nope" })).status === 400);
-const ci = await ciM.cl.post("/api/checkin", { code });
-check("QR check-in works 10 minutes early", ci.status === 200 && (await q("select checked_in_by from bookings where id = $1", [ciB]))[0].checked_in_by === "qr", JSON.stringify(ci.body));
+const OTG = { lat: 38.7455, lng: -77.6738 };
+const noVenue = await ciM.cl.post("/api/checkin", { ...OTG, accuracy: 20 });
+check("location check-in refused until the venue is set", noVenue.status === 400 && /isn't set up/.test(noVenue.body.error), noVenue.body.error);
+check("staff can't set the venue without the key", (await client().post("/api/staff/venue", OTG)).status === 401);
+const sv = await staff.post("/api/staff/venue", OTG, staffH);
+check("staff set the venue from their phone", sv.status === 200 && sv.body.venue.lat === OTG.lat && sv.body.venue.radius_m === 200);
+const farAway = await ciM.cl.post("/api/checkin", { lat: 38.80, lng: -77.60, accuracy: 30 });
+check("\"I'm here\" from 10 km away is refused", farAway.status === 400 && /not at On The Green/.test(farAway.body.error), farAway.body.error);
+const ci = await ciM.cl.post("/api/checkin", { lat: OTG.lat + 0.0008, lng: OTG.lng, accuracy: 40 });
+check("\"I'm here\" from inside the building (about 90 m off) works 10 minutes early", ci.status === 200 && (await q("select checked_in_by from bookings where id = $1", [ciB]))[0].checked_in_by === "location", JSON.stringify(ci.body));
+const again = await ciM.cl.post("/api/checkin", { ...OTG, accuracy: 10 });
+check("tapping again says already checked in", again.status === 200 && again.body.already === true);
+const cfgNow = (await staff.get("/api/staff/settings", staffH)).body.overrides;
+check("venue survives in the editable rules", cfgNow.venue?.lat === OTG.lat);
 
 // no-show fixtures (the minute tick runs during the wait below)
-await staff.put("/api/staff/settings", { overrides: { first_day: today, holidays: [day], no_show_fees_on: true } }, staffH);
+await staff.put("/api/staff/settings", { overrides: { ...cfgNow, no_show_fees_on: true } }, staffH);
 const nsM = await memberClient("full", { cus: `cus_ns_${run}` });
 const nsB = (await q(`insert into bookings (bay_id, player_id, starts_at, ends_at, status, plan)
   values ('bay4', $1, now() - interval '20 minutes', now() + interval '40 minutes', 'confirmed', 'full') returning id`, [nsM.id]))[0].id;
@@ -269,7 +280,7 @@ check("no-show message queued", (await q("select 1 from outbox where dedupe_key 
 const nsg = (await q("select status, no_show_fee_cents from bookings where id = $1", [nsGuest]))[0];
 check("non-member no-show: released, no fee (they prepaid)", nsg.status === "no_show" && nsg.no_show_fee_cents === 0);
 check("released bay is open again", (await other.get(`/api/availability?date=${today}`)).status === 200);
-const late = await nsM.cl.post("/api/checkin", { code });
+const late = await nsM.cl.post("/api/checkin", { ...OTG, accuracy: 25 });
 const nsAfter = (await q("select status, no_show_waived, no_show_fee_cents, checked_in_at from bookings where id = $1", [nsB]))[0];
 check("they turn up and scan: booking restored, fee dropped", late.status === 200 && nsAfter.status === "confirmed" && nsAfter.no_show_waived && nsAfter.no_show_fee_cents === 0 && nsAfter.checked_in_at, JSON.stringify(nsAfter));
 check("fee removed from Stripe", stripeCalls.some((c) => c.method === "DELETE" && c.path.startsWith("/v1/invoiceitems/")));

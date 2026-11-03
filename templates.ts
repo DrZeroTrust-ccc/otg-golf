@@ -247,12 +247,12 @@ Paid bookings cancelled at least 24 hours ahead are refunded in full.
 See you at ${ADDRESS}.
 
 ${SIGNOFF}`,
-    sms: `OTG: ${b.early ? "Early start approved" : "You're booked"}. ${b.bay}, ${b.when}. Scan the code at the front desk when you arrive. Manage it at ${BOOK_URL()}`,
+    sms: `OTG: ${b.early ? "Early start approved" : "You're booked"}. ${b.bay}, ${b.when}. Tap "I'm here" in the app when you arrive. Manage it at ${BOOK_URL()}`,
   };
 }
 
 export function bookingReminder(b: { bay: string; when: string }): Msg {
-  return { subject: `Reminder: ${b.bay}, ${b.when}`, text: `See you soon: ${b.bay}, ${b.when}.`, sms: `OTG: See you soon. ${b.bay}, ${b.when}. Need to cancel? ${BOOK_URL()}` };
+  return { subject: `Reminder: ${b.bay}, ${b.when}`, text: `See you soon: ${b.bay}, ${b.when}.`, sms: `OTG: See you soon. ${b.bay}, ${b.when}. When you arrive, tap "I'm here" at ${BOOK_URL()}` };
 }
 
 export function bookingCancelled(b: { bay: string; when: string; refundCents: number; byStaff: boolean }): Msg {
@@ -308,7 +308,7 @@ export function noShowNotice(b: { bay: string; when: string; feeCents: number; m
   const fee = b.feeCents ? ` A ${money(b.feeCents)} missed-booking fee will be added to your next membership bill.` : "";
   return {
     subject: `We missed you: ${b.bay}, ${b.when}`,
-    text: `Hi {{first_name}},\n\nWe didn't see you check in within ${b.minutes} minutes for ${b.bay}, ${b.when}, so we released the bay to other players.${fee}\n\nIf you're here, scan the code at the front desk; if the bay is still free, we'll put your booking back and drop the fee.\n\n${SIGNOFF}`,
-    sms: `OTG: We released ${b.bay} (${b.when}) after ${b.minutes} min with no check-in.${b.feeCents ? ` ${money(b.feeCents)} fee applies.` : ""} Here now? Scan the desk code.`,
+    text: `Hi {{first_name}},\n\nWe didn't see you check in within ${b.minutes} minutes for ${b.bay}, ${b.when}, so we released the bay to other players.${fee}\n\nIf you're here, open the app and tap "I'm here". If the bay is still free, we'll put your booking back and drop the fee.\n\n${SIGNOFF}`,
+    sms: `OTG: We released ${b.bay} (${b.when}) after ${b.minutes} min with no check-in.${b.feeCents ? ` ${money(b.feeCents)} fee applies.` : ""} Here now? Tap I'm here in the app.`,
   };
 }
