@@ -6,6 +6,7 @@ import { mountRoutes } from "./routes.js";
 import { mountInquiries, nudgeStaleInquiries } from "./inquiries.js";
 import { syncMemberNumbersToStripe, queueMemberNumberNotices } from "./members.js";
 import { dispatchOutbox, kickOutbox } from "./notify.js";
+import { mountBookings, onBookingCheckoutCompleted, onBookingCheckoutExpired, bookingTick } from "./bookings.js";
 
 const app = express();
 // Never let a stray promise rejection take the service down; log it and keep serving.
@@ -16,6 +17,7 @@ const whSecret = process.env.STRIPE_WEBHOOK_SECRET?.trim();
 const stripe = stripeKey ? new Stripe(stripeKey) : null;
 mountRoutes(app);
 mountInquiries(app);
+mountBookings(app);
 
 app.get("/health", async (_req, res) => {
   try { await pool.query("select 1"); res.json({ ok: true }); }
@@ -72,6 +74,7 @@ export async function handle(client: import("pg").PoolClient, event: Stripe.Even
       return onSubscription(client, event.data.object as Stripe.Subscription);
     case "checkout.session.completed": {
       const sess = event.data.object as Stripe.Checkout.Session;
+      if (sess.metadata?.booking_id) return onBookingCheckoutCompleted(client, sess);
       if (sess.mode === "setup") {
         const full = await s.checkout.sessions.retrieve(sess.id, { expand: ["setup_intent"] });
         return onSetupCompleted(client, full, s);
@@ -88,6 +91,8 @@ export async function handle(client: import("pg").PoolClient, event: Stripe.Even
       }
       return onCheckoutCompleted(client, sess, priceId, productId);
     }
+    case "checkout.session.expired":
+      return onBookingCheckoutExpired(client, event.data.object as Stripe.Checkout.Session);
     case "invoice.payment_failed":
       return onInvoicePaymentFailed(client, event.data.object as Stripe.Invoice);
     default:
@@ -107,6 +112,7 @@ if (process.env.NODE_ENV !== "test") {
       try { await queueMemberNumberNotices(); } catch (e) { console.error("member number notices failed:", (e as Error).message); }
       if (stripe) try { await syncMemberNumbersToStripe(stripe); } catch (e) { console.error("member number sync failed:", (e as Error).message); }
       if (stripe) try { await alignFoundingTrials(stripe); } catch (e) { console.error("founding trial alignment failed:", (e as Error).message); }
+      try { await bookingTick(); } catch (e) { console.error("booking tick failed:", (e as Error).message); }
       await dispatchOutbox();
     })();
   }, 60_000).unref();

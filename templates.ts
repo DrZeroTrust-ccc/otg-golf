@@ -222,3 +222,59 @@ export function ownerWaitlist(p: { name?: string | null; email?: string | null; 
     sms: `OTG: Founding seats full. Waitlist: ${p.name || p.email || "someone"}`,
   };
 }
+
+// ---- customers: bay bookings -------------------------------------------------
+
+const BOOK_URL = () => `${process.env.PUBLIC_BASE_URL ?? "https://otg-ops.onrender.com"}/book`;
+
+export function bookingConfirmed(b: { bay: string; when: string; priceCents: number; guests: number }): Msg {
+  const paid = b.priceCents ? `Paid: ${money(b.priceCents)}. Stripe has emailed your receipt separately.` : "Included in your membership.";
+  return {
+    subject: `Booked: ${b.bay}, ${b.when}`,
+    text:
+`Hi {{first_name}},
+
+You're booked at On The Green.
+
+${b.bay}
+${b.when}
+Players: ${b.guests + 1}
+${paid}
+
+To see or cancel your booking: ${BOOK_URL()}
+Paid bookings cancelled at least 24 hours ahead are refunded in full.
+
+See you at ${ADDRESS}.
+
+${SIGNOFF}`,
+    sms: `OTG: You're booked. ${b.bay}, ${b.when}. Manage it at ${BOOK_URL()}`,
+  };
+}
+
+export function bookingReminder(b: { bay: string; when: string }): Msg {
+  return { subject: `Reminder: ${b.bay}, ${b.when}`, text: `See you soon: ${b.bay}, ${b.when}.`, sms: `OTG: See you soon. ${b.bay}, ${b.when}. Need to cancel? ${BOOK_URL()}` };
+}
+
+export function bookingCancelled(b: { bay: string; when: string; refundCents: number; byStaff: boolean }): Msg {
+  const refund = b.refundCents ? `We've refunded ${money(b.refundCents)}; it shows on your card in 5 to 10 days.` : "";
+  return {
+    subject: `Cancelled: ${b.bay}, ${b.when}`,
+    text:
+`Hi {{first_name}},
+
+${b.byStaff ? "We've cancelled" : "You cancelled"} your booking: ${b.bay}, ${b.when}. ${refund}
+
+Book again any time at ${BOOK_URL()}
+
+${SIGNOFF}`,
+    sms: `OTG: Booking cancelled. ${b.bay}, ${b.when}.${b.refundCents ? ` Refund: ${money(b.refundCents)}.` : ""}`,
+  };
+}
+
+export function ownerBookingConflict(b: { bay: string; when: string; checkout: string }): Msg {
+  return {
+    subject: `Booking needs you: paid after the hold ran out (${b.bay}, ${b.when})`,
+    text: `Someone paid for ${b.bay}, ${b.when}, but the slot was taken after their hold expired. Refund them in Stripe (checkout ${b.checkout}) or move them to another bay from the staff screen.`,
+    sms: `OTG: Paid booking clash on ${b.bay}, ${b.when}. Check the staff screen.`,
+  };
+}

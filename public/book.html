@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Book a Bay | On The Green</title>
+<meta name="theme-color" content="#0f2a1d">
+<link rel="manifest" href="/book/manifest.webmanifest">
+<link rel="icon" href="/book/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/book/icon.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<style>
+  :root { --green:#0f2a1d; --green2:#173d2a; --gold:#c4a26a; --cream:#f6f1e7; --ink:#1b2a22; --muted:#6b756f; --line:#e4dccb; --red:#a33a2b; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--cream); color:var(--ink); font:16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { background:var(--green); color:var(--cream); padding:18px 16px 16px; padding-top:max(18px, env(safe-area-inset-top)); }
+  header .row { max-width:720px; margin:0 auto; display:flex; justify-content:space-between; align-items:center; gap:12px; }
+  h1, h2 { font-family: Georgia, "Times New Roman", serif; font-weight:normal; margin:0; }
+  h1 { font-size:22px; } h2 { font-size:20px; margin-bottom:10px; }
+  .badge { font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--gold); border:1px solid var(--gold); padding:3px 8px; white-space:nowrap; }
+  main { max-width:720px; margin:0 auto; padding:16px; }
+  section { background:#fff; border:1px solid var(--line); padding:16px; margin-bottom:16px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
+  input[type=tel], input[type=email], input[type=text], select { width:100%; font:inherit; padding:11px 12px; border:1px solid var(--line); background:#fff; border-radius:0; }
+  button { font:inherit; cursor:pointer; border:0; }
+  .btn { background:var(--gold); color:var(--green); padding:12px 18px; font-weight:600; width:100%; }
+  .btn:disabled { opacity:.5; cursor:default; }
+  .link { background:none; color:var(--green2); text-decoration:underline; padding:0; font-size:14px; }
+  .check { display:flex; gap:8px; align-items:flex-start; font-size:13px; color:var(--muted); margin-top:10px; }
+  .days { display:flex; gap:8px; overflow-x:auto; padding-bottom:4px; -webkit-overflow-scrolling:touch; }
+  .day { flex:0 0 auto; background:#fff; border:1px solid var(--line); padding:8px 10px; text-align:center; min-width:62px; }
+  .day b { display:block; font-size:18px; }
+  .day small { font-size:12px; color:var(--muted); }
+  .day.on { background:var(--green); color:var(--cream); border-color:var(--green); }
+  .day.on small { color:var(--gold); }
+  .bays { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:8px; }
+  .bay { background:#fff; border:1px solid var(--line); padding:10px; text-align:left; }
+  .bay.on { border-color:var(--green); box-shadow:inset 0 0 0 2px var(--green); }
+  .bay .n { font-weight:600; } .bay .s { font-size:12px; color:var(--muted); }
+  .bay.premier { background:var(--green); color:var(--cream); border-color:var(--gold); }
+  .bay.premier .s { color:var(--gold); }
+  .bay.premier.on { box-shadow:inset 0 0 0 2px var(--gold); }
+  .slots { display:grid; grid-template-columns:repeat(auto-fill, minmax(78px, 1fr)); gap:6px; margin-top:12px; }
+  .slot { padding:9px 4px; border:1px solid var(--line); background:#fff; font-size:14px; text-align:center; }
+  .slot small { display:block; font-size:11px; color:var(--muted); }
+  .slot.on { background:var(--green); color:var(--cream); border-color:var(--green); } .slot.on small { color:var(--gold); }
+  .slot.in { background:var(--green2); color:var(--cream); border-color:var(--green2); } .slot.in small { color:var(--gold); }
+  .slot:disabled { background:#f0ece3; color:#aaa; cursor:default; text-decoration:line-through; }
+  .slot.mine:disabled { text-decoration:none; color:var(--green2); background:#e7efe9; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .total { display:flex; justify-content:space-between; align-items:baseline; margin:14px 0 10px; }
+  .total b { font-size:22px; font-family:Georgia, serif; }
+  .msg { padding:12px 14px; margin-bottom:16px; border-left:4px solid var(--gold); background:#fff; }
+  .msg.err { border-color:var(--red); color:var(--red); }
+  .bk { display:flex; justify-content:space-between; gap:10px; padding:10px 0; border-top:1px solid var(--line); align-items:center; }
+  .bk:first-of-type { border-top:0; }
+  .bk .w { font-size:14px; color:var(--muted); }
+  .cancel { background:none; border:1px solid var(--line); padding:8px 10px; font-size:13px; color:var(--red); white-space:nowrap; }
+  .muted { color:var(--muted); font-size:14px; }
+  .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:8px; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+<header><div class="row"><h1>On The Green</h1><span id="who" class="badge hidden"></span></div></header>
+<main>
+  <div id="flash"></div>
+
+  <section id="closed" class="hidden"><h2>Booking opens soon</h2><p class="muted">Bay booking opens once our opening day is announced. Members will hear first.</p></section>
+
+  <section id="signin" class="hidden">
+    <h2>Sign in to book</h2>
+    <div id="step1">
+      <div id="byPhone">
+        <label for="phone">Mobile number</label>
+        <input id="phone" type="tel" autocomplete="tel" inputmode="tel" placeholder="(540) 555-0123">
+        <div class="check"><input id="smsok" type="checkbox"><label for="smsok" style="margin:0">Text me booking confirmations and reminders. Msg &amp; data rates may apply. Reply STOP to opt out.</label></div>
+      </div>
+      <div id="byEmail" class="hidden">
+        <label for="email">Email</label>
+        <input id="email" type="email" autocomplete="email" placeholder="you@example.com">
+      </div>
+      <p><button class="btn" id="send">Send me a code</button></p>
+      <button class="link" id="swap">Use email instead</button>
+    </div>
+    <div id="step2" class="hidden">
+      <p class="muted" id="sentTo"></p>
+      <label for="code">6-digit code</label>
+      <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6">
+      <label for="name">Your name (first time only)</label>
+      <input id="name" type="text" autocomplete="name">
+      <p><button class="btn" id="verify">Sign in</button></p>
+      <button class="link" id="back">Start over</button>
+    </div>
+  </section>
+
+  <section id="mine" class="hidden"><h2>Your bookings</h2><div id="mineList"></div></section>
+
+  <section id="picker" class="hidden">
+    <h2>Book a bay</h2>
+    <div class="days" id="days"></div>
+    <label>Bay</label>
+    <div class="bays" id="bays"></div>
+    <div id="hours" class="muted" style="margin-top:12px"></div>
+    <div class="slots" id="slots"></div>
+    <div class="legend"><span>Prices are per bay, up to 6 players</span></div>
+    <div id="form" class="hidden">
+      <div class="grid2">
+        <div><label for="len">How long</label><select id="len"></select></div>
+        <div><label for="players">Players</label><select id="players"></select></div>
+      </div>
+      <div class="total"><span id="summary"></span><b id="price"></b></div>
+      <button class="btn" id="book">Book</button>
+      <p class="muted" id="policy"></p>
+    </div>
+  </section>
+
+  <p class="muted" style="text-align:center"><button class="link hidden" id="signout">Sign out</button></p>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var state = { me: null, date: null, day: null, bay: null, start: null, useEmail: false, armed: null };
+  var money = function (c) { return c ? "$" + (c / 100).toFixed(c % 100 ? 2 : 0) : "Included"; };
+  var ampm = function (t) { var p = t.split(":"), h = +p[0], m = p[1]; return (h % 12 || 12) + (m === "00" ? "" : ":" + m) + (h < 12 ? "am" : "pm"); };
+  var toMin = function (t) { var p = t.split(":"); return +p[0] * 60 + +p[1]; };
+  var PLAN = { founding: "Founding member", full: "Full member", weekday: "Weekday member" };
+
+  function flash(text, err) { $("flash").innerHTML = text ? '<div class="msg' + (err ? " err" : "") + '"></div>' : ""; if (text) $("flash").firstChild.textContent = text; if (text) window.scrollTo(0, 0); }
+  function api(path, body) {
+    return fetch(path, body === undefined ? { credentials: "same-origin" } : { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) throw new Error(j.error || "Something went wrong."); return j; }); });
+  }
+
+  function loadMe() {
+    return api("/api/me").then(function (me) {
+      state.me = me;
+      $("closed").classList.toggle("hidden", me.open);
+      $("picker").classList.toggle("hidden", !me.open);
+      $("signin").classList.toggle("hidden", me.signed_in);
+      $("signout").classList.toggle("hidden", !me.signed_in);
+      var who = $("who");
+      if (me.signed_in) { who.textContent = (PLAN[me.plan] || "Guest") + (me.member_number ? " · " + me.member_number : ""); who.classList.remove("hidden"); }
+      else who.classList.add("hidden");
+      renderMine();
+      renderDays();
+    });
+  }
+
+  function renderMine() {
+    var list = (state.me && state.me.bookings) || [];
+    $("mine").classList.toggle("hidden", !list.length);
+    var box = $("mineList"); box.innerHTML = "";
+    list.forEach(function (b) {
+      var row = document.createElement("div"); row.className = "bk";
+      var left = document.createElement("div");
+      left.innerHTML = "<div></div><div class='w'></div>";
+      left.firstChild.textContent = b.bay;
+      left.lastChild.textContent = b.when + (b.status === "pending_payment" ? " · waiting for payment" : "");
+      var btn = document.createElement("button"); btn.className = "cancel"; btn.textContent = "Cancel";
+      btn.onclick = function () {
+        if (state.armed !== b.id) {
+          state.armed = b.id;
+          var hrs = (new Date(b.starts_at) - Date.now()) / 3600000;
+          btn.textContent = b.paid_cents && hrs < state.me.refund_cutoff_hours ? "Cancel, no refund?" : "Tap again to cancel";
+          return;
+        }
+        btn.disabled = true;
+        api("/api/bookings/" + b.id + "/cancel", {}).then(function (r) {
+          flash(r.refunded_cents ? "Cancelled. " + money(r.refunded_cents) + " is on its way back to your card." : "Cancelled.");
+          return refresh();
+        }).catch(function (e) { flash(e.message, true); btn.disabled = false; });
+      };
+      row.appendChild(left); row.appendChild(btn); box.appendChild(row);
+    });
+  }
+
+  function renderDays() {
+    var box = $("days"); box.innerHTML = "";
+    var days = state.me.days || [];
+    if (!days.length) return;
+    if (days.indexOf(state.date) < 0) state.date = days[0];
+    days.forEach(function (d) {
+      var dt = new Date(d + "T12:00:00Z");
+      var b = document.createElement("button"); b.className = "day" + (d === state.date ? " on" : "");
+      b.innerHTML = "<small></small><b></b><small></small>";
+      b.childNodes[0].textContent = dt.toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" });
+      b.childNodes[1].textContent = dt.getUTCDate();
+      b.childNodes[2].textContent = dt.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" });
+      b.onclick = function () { state.date = d; state.start = null; renderDays(); loadDay(); };
+      box.appendChild(b);
+    });
+  }
+
+  function loadDay() {
+    if (!state.date) return Promise.resolve();
+    return api("/api/availability?date=" + state.date).then(function (day) {
+      state.day = day;
+      var hasOpen = function (b) { return b.slots.some(function (s) { return s.state === "open"; }); };
+      var cur = day.bays.filter(function (b) { return b.id === state.bay; })[0];
+      if (!cur || (!state.start && !hasOpen(cur))) { var first = day.bays.filter(hasOpen)[0] || day.bays[0]; state.bay = first ? first.id : null; }
+      renderBays(); renderSlots();
+    }).catch(function (e) { flash(e.message, true); });
+  }
+
+  function bay() { var d = state.day; return d && d.bays.filter(function (b) { return b.id === state.bay; })[0]; }
+
+  function renderBays() {
+    var box = $("bays"); box.innerHTML = "";
+    state.day.bays.forEach(function (b) {
+      var open = b.slots.filter(function (s) { return s.state === "open"; }).length;
+      var el = document.createElement("button");
+      el.className = "bay" + (b.premier ? " premier" : "") + (b.id === state.bay ? " on" : "");
+      el.innerHTML = "<div class='n'></div><div class='s'></div>";
+      el.firstChild.textContent = b.name;
+      var membersOnly = !open && b.slots.some(function (s) { return s.state === "members"; });
+      el.lastChild.textContent = (b.premier ? "Members' bay · " : b.kind === "putt" ? "Putting · " : "") + (open ? open + " open" : membersOnly ? "Members only today" : "Full");
+      el.onclick = function () { state.bay = b.id; state.start = null; renderBays(); renderSlots(); };
+      box.appendChild(el);
+    });
+  }
+
+  function renderSlots() {
+    var d = state.day, b = bay(), box = $("slots"); box.innerHTML = "";
+    $("hours").textContent = d.hours ? "Open " + ampm(d.hours.open) + " to " + ampm(d.hours.close) : "Closed this day.";
+    if (!b) return;
+    var len = +$("len").value || 0;
+    b.slots.forEach(function (s, i) {
+      var el = document.createElement("button");
+      el.className = "slot" + (s.state === "mine" ? " mine" : "");
+      el.innerHTML = "<span></span><small></small>";
+      el.firstChild.textContent = ampm(s.t);
+      el.lastChild.textContent = s.state === "open" ? (s.price ? money(s.price * 60 / d.slot_minutes) + "/hr" : "Included") : s.state === "mine" ? "Yours" : s.state === "members" ? "Members" : s.state === "past" ? "" : "Booked";
+      el.disabled = s.state !== "open";
+      if (state.start === s.t) el.classList.add("on");
+      else if (state.start && len && toMin(s.t) > toMin(state.start) && toMin(s.t) < toMin(state.start) + len) el.classList.add("in");
+      el.onclick = function () { state.start = s.t; renderForm(); renderSlots(); };
+      box.appendChild(el);
+    });
+    $("form").classList.toggle("hidden", !state.start);
+  }
+
+  function renderForm() {
+    var d = state.day, b = bay(); if (!b || !state.start) return;
+    var step = d.slot_minutes, min = d.min_minutes[b.kind], max = d.max_minutes;
+    var i0 = b.slots.findIndex(function (s) { return s.t === state.start; });
+    var run = 0; for (var i = i0; i < b.slots.length && b.slots[i].state === "open"; i++) run += step;
+    var sel = $("len"), keep = +sel.value; sel.innerHTML = "";
+    for (var m = min; m <= Math.min(max, run); m += step) {
+      var o = document.createElement("option"); o.value = m;
+      o.textContent = m % 60 ? (m / 60).toFixed(1).replace(".0", "") + " hours" : m === 60 ? "1 hour" : m / 60 + " hours";
+      if (m === 30) o.textContent = "30 minutes";
+      sel.appendChild(o);
+    }
+    if (!sel.options.length) { var o2 = document.createElement("option"); o2.textContent = "Not enough time free"; o2.value = 0; sel.appendChild(o2); }
+    if (keep && sel.querySelector('option[value="' + keep + '"]')) sel.value = keep;
+    else if (sel.querySelector('option[value="60"]')) sel.value = 60;
+    var pl = $("players"); if (!pl.options.length) for (var p = 1; p <= d.max_guests + 1; p++) { var op = document.createElement("option"); op.value = p; op.textContent = p; pl.appendChild(op); }
+    updateTotal();
+  }
+
+  function updateTotal() {
+    var b = bay(), len = +$("len").value; if (!b || !state.start) return;
+    var i0 = b.slots.findIndex(function (s) { return s.t === state.start; });
+    var total = 0; for (var i = 0; i < len / state.day.slot_minutes; i++) total += b.slots[i0 + i].price;
+    var end = toMin(state.start) + len, eh = Math.floor(end / 60), em = end % 60;
+    $("summary").textContent = b.name + ", " + ampm(state.start) + " to " + ampm(eh + ":" + (em < 10 ? "0" : "") + em);
+    $("price").textContent = len ? money(total) : "";
+    var signed = state.me && state.me.signed_in;
+    $("book").disabled = !len || !signed;
+    $("book").textContent = !signed ? "Sign in above to book" : total ? "Book and pay " + money(total) : "Book";
+    $("policy").textContent = total ? "Cancel at least 24 hours ahead for a full refund." : "";
+  }
+
+  $("len").onchange = function () { updateTotal(); renderSlots(); };
+  $("book").onclick = function () {
+    var btn = $("book"); btn.disabled = true;
+    api("/api/bookings", { bay_id: state.bay, date: state.date, start: state.start, minutes: +$("len").value, guests: +$("players").value - 1 })
+      .then(function (r) {
+        if (r.checkout_url) { location.href = r.checkout_url; return; }
+        flash("You're booked. We'll send the details" + (state.me.plan !== "none" ? "." : " to you."));
+        state.start = null; return refresh();
+      })
+      .catch(function (e) { flash(e.message, true); btn.disabled = false; loadDay(); });
+  };
+
+  // ---- sign in ----
+  $("swap").onclick = function () {
+    state.useEmail = !state.useEmail;
+    $("byPhone").classList.toggle("hidden", state.useEmail); $("byEmail").classList.toggle("hidden", !state.useEmail);
+    $("swap").textContent = state.useEmail ? "Use my mobile number instead" : "Use email instead";
+  };
+  function addr() { return state.useEmail ? { email: $("email").value } : { phone: $("phone").value }; }
+  $("send").onclick = function () {
+    var btn = $("send"); btn.disabled = true;
+    api("/api/auth/start", addr()).then(function () {
+      $("step1").classList.add("hidden"); $("step2").classList.remove("hidden");
+      $("sentTo").textContent = "We sent a code to " + (state.useEmail ? $("email").value : $("phone").value) + ".";
+      $("code").focus(); flash("");
+    }).catch(function (e) { flash(e.message, true); }).then(function () { btn.disabled = false; });
+  };
+  $("back").onclick = function () { $("step2").classList.add("hidden"); $("step1").classList.remove("hidden"); };
+  $("verify").onclick = function () {
+    var body = addr(); body.code = $("code").value; body.name = $("name").value; body.sms_ok = !state.useEmail && $("smsok").checked;
+    var btn = $("verify"); btn.disabled = true;
+    api("/api/auth/verify", body).then(function () { flash(""); return refresh(); })
+      .catch(function (e) { flash(e.message, true); }).then(function () { btn.disabled = false; });
+  };
+  $("signout").onclick = function () { api("/api/auth/signout", {}).then(function () { location.href = "/book"; }); };
+
+  function refresh() { return loadMe().then(loadDay).then(function () { if (state.start) renderForm(); }); }
+
+  // Back from Stripe.
+  var q = new URLSearchParams(location.search);
+  var start = Promise.resolve();
+  if (q.get("paid")) flash("Payment received. Your booking shows below once it's confirmed (usually a few seconds).");
+  if (q.get("release")) start = api("/api/bookings/" + q.get("release") + "/release", {}).catch(function () {}).then(function () { flash("No payment was taken, and that time is free again."); });
+  if (q.get("paid") || q.get("release")) history.replaceState(null, "", "/book");
+  start.then(refresh).catch(function (e) { flash(e.message, true); });
+  if (q.get("paid")) setTimeout(function () { refresh(); }, 4000);
+})();
+</script>
+</body>
+</html>
