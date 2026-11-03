@@ -33,8 +33,8 @@ async function queue(db: Db, r: {
 
 // Queue a message to a player. The address is looked up at send time, because Stripe's
 // customer event (which carries the email) can arrive after the event that triggers the message.
-export async function notifyCustomer(db: Db, key: string, playerId: string, m: Msg, opts: { replyTo?: string; to?: string | null; delaySeconds?: number } = {}) {
-  await queue(db, { key: `${key}:email`, audience: "customer", channel: "email", playerId, to: opts.to ?? null, subject: m.subject, body: m.text, replyTo: opts.replyTo ?? ownerEmails()[0], delaySeconds: opts.delaySeconds });
+export async function notifyCustomer(db: Db, key: string, playerId: string, m: Msg, opts: { replyTo?: string; to?: string | null; delaySeconds?: number; smsOnly?: boolean } = {}) {
+  if (!opts.smsOnly) await queue(db, { key: `${key}:email`, audience: "customer", channel: "email", playerId, to: opts.to ?? null, subject: m.subject, body: m.text, replyTo: opts.replyTo ?? ownerEmails()[0], delaySeconds: opts.delaySeconds });
   if (m.sms) await queue(db, { key: `${key}:sms`, audience: "customer", channel: "sms", playerId, body: m.sms, delaySeconds: opts.delaySeconds });
 }
 

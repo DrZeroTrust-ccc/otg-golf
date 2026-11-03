@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bay Schedule | On The Green</title>
+<meta name="robots" content="noindex">
+<style>
+  :root { --green:#0f2a1d; --gold:#c4a26a; --cream:#f6f1e7; --line:#e4dccb; --muted:#6b756f; --red:#a33a2b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--cream); color:#1b2a22; font:15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { background:var(--green); color:var(--cream); padding:14px 16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  header h1 { font:normal 20px Georgia, serif; margin:0 auto 0 0; }
+  main { padding:16px; max-width:1100px; margin:0 auto; }
+  input, select, textarea { font:inherit; padding:8px 10px; border:1px solid var(--line); background:#fff; }
+  button { font:inherit; cursor:pointer; border:0; padding:8px 14px; background:var(--gold); color:var(--green); font-weight:600; }
+  button.plain { background:#fff; border:1px solid var(--line); color:#1b2a22; font-weight:normal; }
+  .wrap { overflow-x:auto; background:#fff; border:1px solid var(--line); }
+  table { border-collapse:collapse; width:100%; min-width:640px; }
+  th, td { border:1px solid var(--line); padding:4px 6px; vertical-align:top; font-size:13px; }
+  th { background:#faf7f0; position:sticky; top:0; }
+  td.t { color:var(--muted); white-space:nowrap; width:60px; }
+  td.closed { background:#f3f0ea; }
+  .b { display:block; width:100%; text-align:left; padding:4px 6px; font-weight:normal; font-size:12px; background:#e7efe9; color:#1b2a22; }
+  .b.block { background:#efe4cc; } .b.pending_payment { background:#fff3d6; } .b.paid_conflict { background:#f6d6d0; }
+  .b.cancelled { background:#f3f0ea; color:#999; text-decoration:line-through; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:16px; margin-top:16px; }
+  section { background:#fff; border:1px solid var(--line); padding:14px; }
+  section h2 { font:normal 18px Georgia, serif; margin:0 0 8px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:8px 0 3px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; } .row > * { flex:1 1 120px; }
+  .msg { padding:10px 12px; margin-bottom:12px; background:#fff; border-left:4px solid var(--gold); }
+  .msg.err { border-color:var(--red); color:var(--red); }
+  #detail { white-space:pre-line; }
+  textarea { width:100%; min-height:260px; font:12px/1.4 ui-monospace, Menlo, monospace; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bay schedule</h1>
+  <button class="plain" id="prev">&larr;</button>
+  <input type="date" id="date">
+  <button class="plain" id="next">&rarr;</button>
+  <button class="plain" id="today">Today</button>
+</header>
+<main>
+  <div id="flash"></div>
+  <section id="keybox" class="hidden" style="margin-bottom:16px">
+    <h2>Staff key</h2>
+    <p style="color:var(--muted)">Enter the staff key once on this device. It's the OTG_STAFF_KEY value in Render (or OTG_READ_KEY if that isn't set).</p>
+    <div class="row"><input id="key" type="password" autocomplete="off"><button id="savekey">Save</button></div>
+  </section>
+
+  <div class="wrap"><table id="sched"></table></div>
+
+  <div class="grid">
+    <section id="detailbox" class="hidden">
+      <h2>Booking</h2>
+      <div id="detail"></div>
+      <p class="row"><label style="flex:0 0 auto;margin:0"><input type="checkbox" id="refund" checked> Refund what they paid</label></p>
+      <button id="cancelBtn">Cancel this booking</button>
+    </section>
+
+    <section>
+      <h2>Book for someone</h2>
+      <div class="row">
+        <div><label>Bay</label><select id="bBay"></select></div>
+        <div><label>Start</label><input id="bStart" type="time" step="1800" value="18:00"></div>
+        <div><label>Minutes</label><input id="bMin" type="number" step="30" min="30" value="60"></div>
+      </div>
+      <div class="row">
+        <div><label>Name</label><input id="bName"></div>
+        <div><label>Mobile</label><input id="bPhone" type="tel"></div>
+      </div>
+      <div class="row">
+        <div><label>Players</label><input id="bPlayers" type="number" min="1" max="6" value="1"></div>
+        <div><label>Note</label><input id="bNote"></div>
+      </div>
+      <p style="color:var(--muted);font-size:13px">Members are recognized by their mobile number. Anything owed is marked "Pay at desk".</p>
+      <button id="bGo">Book</button>
+    </section>
+
+    <section>
+      <h2>Block time</h2>
+      <div class="row">
+        <div><label>Bay</label><select id="kBay"></select></div>
+        <div><label>Start</label><input id="kStart" type="time" step="1800" value="18:00"></div>
+        <div><label>Minutes</label><input id="kMin" type="number" step="30" min="30" value="120"></div>
+      </div>
+      <label>Reason (league, lesson, event, maintenance)</label><input id="kNote" style="width:100%">
+      <p><button id="kGo">Block</button></p>
+    </section>
+  </div>
+
+  <section style="margin-top:16px">
+    <h2>Rules and prices</h2>
+    <p style="color:var(--muted);font-size:13px">Only list what you want to change from the defaults shown underneath. Example: <code>{"rates_cents":{"prime":8000},"holidays":["2026-12-25"]}</code>. Times are "HH:MM", prices are in cents.</p>
+    <textarea id="cfg"></textarea>
+    <p><button id="cfgSave">Save changes</button></p>
+    <details><summary>Current rules (defaults plus your changes)</summary><pre id="eff" style="font-size:12px;white-space:pre-wrap"></pre></details>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var key = ""; try { key = localStorage.getItem("otgStaffKey") || ""; } catch (e) {}
+  var data = null, picked = null;
+  var pad = function (n) { return (n < 10 ? "0" : "") + n; };
+  var toMin = function (t) { var p = t.split(":"); return +p[0] * 60 + +p[1]; };
+  var hm = function (m) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); };
+  var ampm = function (t) { var p = t.split(":"), h = +p[0]; return (h % 12 || 12) + (p[1] === "00" ? "" : ":" + p[1]) + (h < 12 ? "am" : "pm"); };
+  var money = function (c) { return "$" + (c / 100).toFixed(c % 100 ? 2 : 0); };
+  function todayEt() { return new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date()); }
+  function shift(d, n) { var t = new Date(d + "T12:00:00Z"); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); }
+  function flash(t, err) { $("flash").innerHTML = t ? '<div class="msg' + (err ? " err" : "") + '"></div>' : ""; if (t) $("flash").firstChild.textContent = t; }
+  function api(method, path, body) {
+    return fetch(path, { method: method, headers: { "X-OTG-Key": key, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) {
+        if (r.status === 401) { $("keybox").classList.remove("hidden"); }
+        if (!r.ok) throw new Error(j.error || "Something went wrong."); return j; }); });
+  }
+
+  function load() {
+    var d = $("date").value;
+    return api("GET", "/api/staff/day?date=" + d).then(function (j) { data = j; $("keybox").classList.add("hidden"); render(); }).catch(function (e) { flash(e.message, true); });
+  }
+
+  function render() {
+    ["bBay", "kBay"].forEach(function (id) {
+      var sel = $(id), keep = sel.value; sel.innerHTML = id === "kBay" ? '<option value="all">All bays</option>' : "";
+      data.bays.forEach(function (b) { var o = document.createElement("option"); o.value = b.id; o.textContent = b.name; sel.appendChild(o); });
+      if (keep) sel.value = keep;
+    });
+    var t = $("sched"); t.innerHTML = "";
+    var head = document.createElement("tr"); head.innerHTML = "<th></th>";
+    data.bays.forEach(function (b) { var th = document.createElement("th"); th.textContent = b.name; head.appendChild(th); });
+    t.appendChild(head);
+    if (!data.hours) { var r0 = document.createElement("tr"); r0.innerHTML = '<td colspan="9">Closed this day.</td>'; t.appendChild(r0); }
+    var open = data.hours ? toMin(data.hours[0]) : 0, close = data.hours ? toMin(data.hours[1]) : 0;
+    var lo = open, hi = close;
+    data.bookings.forEach(function (b) { lo = Math.min(lo, toMin(b.start)); hi = Math.max(hi, toMin(b.end) || 1440); });
+    for (var m = lo; m < hi; m += 30) {
+      var tr = document.createElement("tr");
+      var tdT = document.createElement("td"); tdT.className = "t"; tdT.textContent = ampm(hm(m)); tr.appendChild(tdT);
+      data.bays.forEach(function (bay) {
+        var td = document.createElement("td");
+        if (m < open || m >= close) td.className = "closed";
+        data.bookings.filter(function (b) { return b.bay_id === bay.id && toMin(b.start) === m; }).forEach(function (b) {
+          var el = document.createElement("button"); el.className = "b " + (b.kind === "block" ? "block" : b.status);
+          var label = b.kind === "block" ? (b.note || "Blocked") : (b.name || b.phone || b.note || "Walk-in");
+          el.textContent = ampm(b.start) + "-" + ampm(b.end) + " " + label + (b.member_number ? " (" + b.member_number + ")" : "");
+          el.onclick = function () { show(b); };
+          td.appendChild(el);
+        });
+        tr.appendChild(td);
+      });
+      t.appendChild(tr);
+    }
+  }
+
+  function show(b) {
+    picked = b;
+    var lines = [
+      b.kind === "block" ? "Blocked: " + (b.note || "") : (b.name || "No name") + (b.member_number ? " · " + b.member_number : ""),
+      b.phone || "", b.email || "",
+      ampm(b.start) + " to " + ampm(b.end) + " · " + (data.bays.filter(function (x) { return x.id === b.bay_id; })[0] || {}).name,
+      b.kind === "block" ? "" : "Plan: " + (b.plan || "none") + " · Players: " + (b.guests + 1),
+      b.kind === "block" ? "" : "Price " + money(b.price_cents) + " · Paid online " + money(b.paid_cents) + (b.refunded_cents ? " · Refunded " + money(b.refunded_cents) : ""),
+      "Status: " + b.status.replace("_", " ") + (b.source === "staff" ? " (booked by staff)" : ""),
+      b.kind !== "block" && b.note ? "Note: " + b.note : "",
+    ].filter(Boolean);
+    $("detail").textContent = lines.join("\n");
+    $("detailbox").classList.remove("hidden");
+    $("cancelBtn").disabled = b.status === "cancelled";
+    $("cancelBtn").textContent = b.kind === "block" ? "Remove this block" : "Cancel this booking";
+    $("cancelBtn").dataset.armed = "";
+  }
+  $("cancelBtn").onclick = function () {
+    var btn = $("cancelBtn");
+    if (!btn.dataset.armed) { btn.dataset.armed = "1"; btn.textContent = "Tap again to confirm"; return; }
+    api("POST", "/api/staff/bookings/" + picked.id + "/cancel", { refund: $("refund").checked }).then(function (r) {
+      flash("Cancelled." + (r.refunded_cents ? " Refunded " + money(r.refunded_cents) + "." : "")); $("detailbox").classList.add("hidden"); load();
+    }).catch(function (e) { flash(e.message, true); });
+  };
+
+  $("bGo").onclick = function () {
+    api("POST", "/api/staff/book", { bay_id: $("bBay").value, date: $("date").value, start: $("bStart").value, minutes: +$("bMin").value, name: $("bName").value, phone: $("bPhone").value, guests: Math.max(0, +$("bPlayers").value - 1), note: $("bNote").value })
+      .then(function () { flash("Booked."); ["bName", "bPhone", "bNote"].forEach(function (id) { $(id).value = ""; }); load(); }).catch(function (e) { flash(e.message, true); });
+  };
+  $("kGo").onclick = function () {
+    api("POST", "/api/staff/block", { bay_id: $("kBay").value, date: $("date").value, start: $("kStart").value, minutes: +$("kMin").value, note: $("kNote").value })
+      .then(function () { flash("Blocked."); load(); }).catch(function (e) { flash(e.message, true); });
+  };
+
+  function loadCfg() {
+    return api("GET", "/api/staff/settings").then(function (j) { $("cfg").value = JSON.stringify(j.overrides, null, 2); $("eff").textContent = JSON.stringify(j.effective, null, 2); }).catch(function () {});
+  }
+  $("cfgSave").onclick = function () {
+    var v; try { v = JSON.parse($("cfg").value || "{}"); } catch (e) { flash("That isn't valid JSON: check for a missing comma or quote.", true); return; }
+    api("PUT", "/api/staff/settings", { overrides: v }).then(function (j) { flash("Saved."); $("eff").textContent = JSON.stringify(j.effective, null, 2); load(); }).catch(function (e) { flash(e.message, true); });
+  };
+
+  $("savekey").onclick = function () { key = $("key").value.trim(); try { localStorage.setItem("otgStaffKey", key); } catch (e) {} load(); loadCfg(); };
+  $("date").value = todayEt();
+  $("date").onchange = load;
+  $("prev").onclick = function () { $("date").value = shift($("date").value, -1); load(); };
+  $("next").onclick = function () { $("date").value = shift($("date").value, 1); load(); };
+  $("today").onclick = function () { $("date").value = todayEt(); load(); };
+  if (!key) $("keybox").classList.remove("hidden");
+  load(); loadCfg();
+  setInterval(load, 60000);
+})();
+</script>
+</body>
+</html>
