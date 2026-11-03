@@ -162,6 +162,13 @@
       left.innerHTML = "<div></div><div class='w'></div>";
       left.firstChild.textContent = b.bay;
       left.lastChild.textContent = b.when + (b.status === "pending_payment" ? " · waiting for payment" : b.status === "requested" ? " · early start, waiting for staff to confirm" : b.checked_in_at ? " · checked in" : "");
+      var startMs = new Date(b.starts_at).getTime(), endMs = new Date(b.ends_at).getTime(), nowMs = Date.now();
+      if (b.status === "confirmed" && !b.checked_in_at && nowMs >= startMs - 30 * 60000 && nowMs < endMs) {
+        var here = document.createElement("button"); here.className = "btn"; here.style.width = "auto"; here.textContent = "I'm here";
+        here.onclick = function () { imHere(here); };
+        row.appendChild(left); row.appendChild(here); box.appendChild(row);
+        return;
+      }
       var btn = document.createElement("button"); btn.className = "cancel"; btn.textContent = "Cancel";
       btn.onclick = function () {
         if (state.armed !== b.id) {
@@ -284,7 +291,7 @@
     if (early) notes.push("We open early only when someone can be here, so staff confirm early starts by text. Ask by " + ampm(d.early_deadline) + " the day before.");
     if (guestFee) notes.push("Includes " + money(guestFee) + " for guests beyond your guest passes.");
     if (total && !early) notes.push("Cancel at least 24 hours ahead for a full refund.");
-    if (d.plan !== "none" && !early) notes.push("Scan the code at the front desk when you arrive; bookings with no check-in after 15 minutes are released.");
+    if (!early) notes.push("Tap \"I'm here\" in the app when you arrive. Bookings with no check-in after 15 minutes are released.");
     $("policy").textContent = notes.join(" ");
   }
 
@@ -334,7 +341,21 @@
     }).then(loadDay).then(function () { if (state.start) renderForm(); });
   }
 
-  // Scanned the front-desk QR code: check in now, or right after signing in.
+  // "I'm here": the phone's location shows the player is at OTG.
+  function imHere(btn) {
+    if (!navigator.geolocation) { flash("This phone can't share its location. Ask the front desk to check you in.", true); return; }
+    btn.disabled = true; btn.textContent = "Checking...";
+    navigator.geolocation.getCurrentPosition(function (pos) {
+      api("/api/checkin", { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy })
+        .then(function (r) { flash("You're checked in: " + r.bay + ", " + r.when + ". Enjoy your round."); return refresh(); })
+        .catch(function (e) { flash(e.message, true); btn.disabled = false; btn.textContent = "I'm here"; });
+    }, function (err) {
+      flash(err.code === 1 ? "To check in, allow location for this page (we only check that you're at On The Green), or ask the front desk." : "We couldn't get your location. Try again, or ask the front desk.", true);
+      btn.disabled = false; btn.textContent = "I'm here";
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
+  }
+
+  // Older desk-code link (?here=CODE): check in now, or right after signing in.
   function checkIn(code) {
     return api("/api/checkin", { code: code }).then(function (r) {
       hereCode = null; try { sessionStorage.removeItem("otgHere"); } catch (e) {}

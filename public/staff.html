@@ -26,8 +26,7 @@
   .b.cancelled, .b.declined { background:#f3f0ea; color:#999; text-decoration:line-through; }
   .b.no_show { background:#f6d6d0; } .b.requested { background:#fff3d6; border:1px dashed #c4a26a; }
   .b.in { box-shadow:inset 3px 0 0 #2e7d4f; }
-  #qr { background:#fff; padding:12px; display:inline-block; }
-  @media print { header, .wrap, .grid, #cfgbox, #flash, #qrbox p, #qrbox button { display:none !important; } #qrbox { border:0; text-align:center; } #qrbox h2 { font-size:28px; } }
+
   .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:16px; margin-top:16px; }
   section { background:#fff; border:1px solid var(--line); padding:14px; }
   section h2 { font:normal 18px Georgia, serif; margin:0 0 8px; }
@@ -98,11 +97,11 @@
     </section>
   </div>
 
-  <section style="margin-top:16px" id="qrbox">
-    <h2>Scan to check in</h2>
-    <p style="color:var(--muted);font-size:13px">Print this and put it at the front desk. Players scan it with their phone camera when they arrive. Bookings with no check-in 15 minutes after the start are released.</p>
-    <div id="qr"></div>
-    <p><button class="plain" id="printQr">Print</button></p>
+  <section style="margin-top:16px" id="venuebox">
+    <h2>Check-in location</h2>
+    <p style="color:var(--muted);font-size:13px">Players check in by tapping "I'm here" in the app. Their phone's location has to be at On The Green, so nobody can check in from the parking lot of the grocery store. Set this once, on your phone, while standing inside OTG.</p>
+    <p id="venueNow"></p>
+    <p><button id="venueBtn">Use where I'm standing now</button></p>
   </section>
 
   <section style="margin-top:16px" id="cfgbox">
@@ -113,7 +112,6 @@
     <details><summary>Current rules (defaults plus your changes)</summary><pre id="eff" style="font-size:12px;white-space:pre-wrap"></pre></details>
   </section>
 </main>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
 (function () {
   var $ = function (id) { return document.getElementById(id); };
@@ -204,14 +202,22 @@
   $("checkinBtn").onclick = function () { act("/checkin", {}, "Checked in."); };
   $("approveBtn").onclick = function () { act("/early", { approve: true }, "Approved. They've been sent a confirmation."); };
   $("declineBtn").onclick = function () { act("/early", { approve: false }, "Declined. They've been told."); };
-  $("printQr").onclick = function () { window.print(); };
-  function loadQr() {
-    return api("GET", "/api/staff/checkin-code").then(function (j) {
-      $("qr").innerHTML = "";
-      if (!j.url || !window.QRCode) { $("qr").textContent = j.url || "No check-in code yet."; return; }
-      new QRCode($("qr"), { text: j.url, width: 220, height: 220 });
-    }).catch(function () {});
+  function showVenue(v) {
+    $("venueNow").textContent = v && typeof v.lat === "number"
+      ? "Set. Phones within " + v.radius_m + " m of that spot can check in."
+      : "Not set yet. Until it is, staff check players in with the \"They're here\" button.";
   }
+  $("venueBtn").onclick = function () {
+    if (!navigator.geolocation) { flash("This device can't share its location.", true); return; }
+    var btn = $("venueBtn"); btn.disabled = true; btn.textContent = "Getting location...";
+    navigator.geolocation.getCurrentPosition(function (pos) {
+      api("POST", "/api/staff/venue", { lat: pos.coords.latitude, lng: pos.coords.longitude })
+        .then(function (j) { showVenue(j.venue); flash("Check-in location saved."); })
+        .catch(function (e) { flash(e.message, true); })
+        .then(function () { btn.disabled = false; btn.textContent = "Use where I'm standing now"; });
+    }, function () { flash("Allow location for this page, then try again.", true); btn.disabled = false; btn.textContent = "Use where I'm standing now"; },
+    { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+  };
   $("cancelBtn").onclick = function () {
     var btn = $("cancelBtn");
     if (!btn.dataset.armed) { btn.dataset.armed = "1"; btn.textContent = "Tap again to confirm"; return; }
@@ -230,21 +236,21 @@
   };
 
   function loadCfg() {
-    return api("GET", "/api/staff/settings").then(function (j) { $("cfg").value = JSON.stringify(j.overrides, null, 2); $("eff").textContent = JSON.stringify(j.effective, null, 2); }).catch(function () {});
+    return api("GET", "/api/staff/settings").then(function (j) { $("cfg").value = JSON.stringify(j.overrides, null, 2); $("eff").textContent = JSON.stringify(j.effective, null, 2); showVenue(j.effective.venue); }).catch(function () {});
   }
   $("cfgSave").onclick = function () {
     var v; try { v = JSON.parse($("cfg").value || "{}"); } catch (e) { flash("That isn't valid JSON: check for a missing comma or quote.", true); return; }
     api("PUT", "/api/staff/settings", { overrides: v }).then(function (j) { flash("Saved."); $("eff").textContent = JSON.stringify(j.effective, null, 2); load(); }).catch(function (e) { flash(e.message, true); });
   };
 
-  $("savekey").onclick = function () { key = $("key").value.trim(); try { localStorage.setItem("otgStaffKey", key); } catch (e) {} load(); loadCfg(); loadQr(); };
+  $("savekey").onclick = function () { key = $("key").value.trim(); try { localStorage.setItem("otgStaffKey", key); } catch (e) {} load(); loadCfg(); };
   $("date").value = todayEt();
   $("date").onchange = load;
   $("prev").onclick = function () { $("date").value = shift($("date").value, -1); load(); };
   $("next").onclick = function () { $("date").value = shift($("date").value, 1); load(); };
   $("today").onclick = function () { $("date").value = todayEt(); load(); };
   if (!key) $("keybox").classList.remove("hidden");
-  load(); loadCfg(); loadQr();
+  load(); loadCfg();
   setInterval(load, 60000);
 })();
 </script>
