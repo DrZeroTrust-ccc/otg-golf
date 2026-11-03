@@ -42,6 +42,19 @@ export const DEFAULTS = {
   max_guests: 5,                                   // bays take up to 6 players
   refund_cutoff_hours: 24,                         // paid bookings cancelled this far ahead are refunded in full
   reminder_hours: 3,                               // reminder text this long before the start
+  // Check-in and no-shows
+  checkin_opens_minutes: 30,                       // the desk QR checks you in from this long before your start
+  no_show_after_minutes: 15,                       // not checked in by then: the bay is released
+  no_show_fees_on: false,                          // off for the soft launch; turn on when ready
+  no_show_fee_cents: 2000,                         // members only, added to their next membership bill
+  strikes: { limit: 3, window_days: 60, pause_days: 30 }, // this many no-shows (or late cancels) pauses Prime booking
+  late_cancel_strike: true,                        // a member cancelling inside refund_cutoff_hours counts as a strike
+  // Guests of members. null = unlimited free guests.
+  guest_passes_per_year: { founding: null, full: 6, weekday: 4 } as Record<"founding" | "full" | "weekday", number | null>,
+  guest_fee_cents: 1000,                           // per guest per booking once passes run out
+  // Early access: members can ask to start up to this long before opening, by the deadline the day before.
+  early_access_minutes: 60,
+  early_access_deadline: "18:00",
 };
 export type Settings = typeof DEFAULTS;
 
@@ -168,7 +181,13 @@ export function ruleProblem(s: Settings, plan: Plan, r: Request, opening: Date |
   if (r.minutes < min) return `The shortest booking is ${min} minutes.`;
   const max = s.plans[plan].max_minutes;
   if (r.minutes > max) return `The longest booking on your plan is ${max / 60} hours.`;
-  if (r.start < hours[0] || r.start + r.minutes > hours[1]) return `We're open ${fmtHm(hours[0])} to ${fmtHm(hours[1])} that day.`;
+  const early = r.start < hours[0];
+  if (early) {
+    if (plan === "none" || r.start < hours[0] - s.early_access_minutes || r.start + r.minutes > hours[1])
+      return `We're open ${fmtHm(hours[0])} to ${fmtHm(hours[1])} that day.`;
+    if (now.getTime() >= earlyDeadline(s, r.date).getTime())
+      return `Early starts need asking for by ${fmtHm(hm(s.early_access_deadline))} the day before.`;
+  } else if (r.start + r.minutes > hours[1]) return `We're open ${fmtHm(hours[0])} to ${fmtHm(hours[1])} that day.`;
   const startsAt = etToUtc(r.date, r.start);
   if (startsAt.getTime() <= now.getTime()) return "That time has already started.";
   if (!Number.isInteger(r.guests) || r.guests < 0 || r.guests > s.max_guests) return `A bay takes up to ${s.max_guests + 1} players.`;
@@ -180,4 +199,36 @@ export function ruleProblem(s: Settings, plan: Plan, r: Request, opening: Date |
       return `Non-members can book the Premier Bay up to ${s.premier_nonmember_within_hours} hours ahead.`;
   }
   return null;
+}
+
+// ---- early access, guests, strikes -----------------------------------------------
+
+export const earlyDeadline = (s: Settings, date: string): Date => etToUtc(addDays(date, -1), hm(s.early_access_deadline));
+export const isEarly = (s: Settings, date: string, start: number): boolean => { const h = hoursFor(s, date); return !!h && start < h[0]; };
+
+// How many of this booking's guests ride on free passes, and what the rest cost.
+// usedThisYear = passes the member has already used this calendar year.
+export function guestSplit(s: Settings, plan: Plan, guests: number, usedThisYear: number): { passes: number; feeCents: number; left: number | null } {
+  if (plan === "none" || guests <= 0) return { passes: 0, feeCents: 0, left: plan === "none" ? 0 : remaining(s, plan, usedThisYear) };
+  const left = remaining(s, plan, usedThisYear);
+  const passes = left === null ? guests : Math.min(guests, left);
+  return { passes, feeCents: (guests - passes) * s.guest_fee_cents, left };
+}
+function remaining(s: Settings, plan: Exclude<Plan, "none">, used: number): number | null {
+  const a = s.guest_passes_per_year[plan];
+  return a === null || a === undefined ? null : Math.max(0, a - used);
+}
+
+// Strikes: no-shows and member late cancels inside the window. At the limit, Prime booking pauses
+// until pause_days after the latest strike.
+export function primePausedUntil(s: Settings, strikeTimes: Date[], now = new Date()): Date | null {
+  const since = now.getTime() - s.strikes.window_days * 86400_000;
+  const recent = strikeTimes.map((d) => d.getTime()).filter((t) => t >= since).sort((a, b) => a - b);
+  if (recent.length < s.strikes.limit) return null;
+  const until = new Date(recent[recent.length - 1] + s.strikes.pause_days * 86400_000);
+  return until.getTime() > now.getTime() ? until : null;
+}
+export function touchesPrime(s: Settings, date: string, start: number, minutes: number): boolean {
+  for (let m = start; m < start + minutes; m += s.slot_minutes) if (bandAt(s, date, m) === "prime") return true;
+  return false;
 }

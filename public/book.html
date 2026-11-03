@@ -94,7 +94,7 @@
     </div>
   </section>
 
-  <section id="mine" class="hidden"><h2>Your bookings</h2><div id="mineList"></div></section>
+  <section id="mine" class="hidden"><h2>Your bookings</h2><div id="mineList"></div><p class="muted" id="mineNotes" style="margin-bottom:0"></p></section>
 
   <section id="picker" class="hidden">
     <h2>Book a bay</h2>
@@ -149,20 +149,26 @@
 
   function renderMine() {
     var list = (state.me && state.me.bookings) || [];
-    $("mine").classList.toggle("hidden", !list.length);
+    var me = state.me || {};
+    var notes = [];
+    if (me.signed_in && me.plan !== "none") notes.push(me.guest_passes_left === null ? "Your guests play free." : me.guest_passes_left + " guest pass" + (me.guest_passes_left === 1 ? "" : "es") + " left this year, then " + money(me.guest_fee_cents) + " per guest.");
+    if (me.prime_paused_until) notes.push("Prime times are paused for you until " + me.prime_paused_until + " after missed bookings.");
+    $("mineNotes").textContent = notes.join(" ");
+    $("mine").classList.toggle("hidden", !list.length && !notes.length);
     var box = $("mineList"); box.innerHTML = "";
     list.forEach(function (b) {
       var row = document.createElement("div"); row.className = "bk";
       var left = document.createElement("div");
       left.innerHTML = "<div></div><div class='w'></div>";
       left.firstChild.textContent = b.bay;
-      left.lastChild.textContent = b.when + (b.status === "pending_payment" ? " · waiting for payment" : "");
+      left.lastChild.textContent = b.when + (b.status === "pending_payment" ? " · waiting for payment" : b.status === "requested" ? " · early start, waiting for staff to confirm" : b.checked_in_at ? " · checked in" : "");
       var btn = document.createElement("button"); btn.className = "cancel"; btn.textContent = "Cancel";
       btn.onclick = function () {
         if (state.armed !== b.id) {
           state.armed = b.id;
           var hrs = (new Date(b.starts_at) - Date.now()) / 3600000;
-          btn.textContent = b.paid_cents && hrs < state.me.refund_cutoff_hours ? "Cancel, no refund?" : "Tap again to cancel";
+          var late = hrs < state.me.refund_cutoff_hours && b.status === "confirmed";
+          btn.textContent = late && b.paid_cents ? "Cancel, no refund?" : late && state.me.plan !== "none" ? "Late cancel counts as a miss. Sure?" : "Tap again to cancel";
           return;
         }
         btn.disabled = true;
@@ -203,6 +209,7 @@
     }).catch(function (e) { flash(e.message, true); });
   }
 
+  function free(s) { return s.state === "open" || s.state === "early"; }
   function bay() { var d = state.day; return d && d.bays.filter(function (b) { return b.id === state.bay; })[0]; }
 
   function renderBays() {
@@ -230,8 +237,8 @@
       el.className = "slot" + (s.state === "mine" ? " mine" : "");
       el.innerHTML = "<span></span><small></small>";
       el.firstChild.textContent = ampm(s.t);
-      el.lastChild.textContent = s.state === "open" ? (s.price ? money(s.price * 60 / d.slot_minutes) + "/hr" : "Included") : s.state === "mine" ? "Yours" : s.state === "members" ? "Members" : s.state === "past" ? "" : "Booked";
-      el.disabled = s.state !== "open";
+      el.lastChild.textContent = s.state === "open" ? (s.price ? money(s.price * 60 / d.slot_minutes) + "/hr" : "Included") : s.state === "early" ? "Early start" : s.state === "mine" ? "Yours" : s.state === "members" ? "Members" : s.state === "past" ? "" : "Booked";
+      el.disabled = !free(s);
       if (state.start === s.t) el.classList.add("on");
       else if (state.start && len && toMin(s.t) > toMin(state.start) && toMin(s.t) < toMin(state.start) + len) el.classList.add("in");
       el.onclick = function () { state.start = s.t; renderForm(); renderSlots(); };
@@ -244,7 +251,7 @@
     var d = state.day, b = bay(); if (!b || !state.start) return;
     var step = d.slot_minutes, min = d.min_minutes[b.kind], max = d.max_minutes;
     var i0 = b.slots.findIndex(function (s) { return s.t === state.start; });
-    var run = 0; for (var i = i0; i < b.slots.length && b.slots[i].state === "open"; i++) run += step;
+    var run = 0; for (var i = i0; i < b.slots.length && free(b.slots[i]); i++) run += step;
     var sel = $("len"), keep = +sel.value; sel.innerHTML = "";
     for (var m = min; m <= Math.min(max, run); m += step) {
       var o = document.createElement("option"); o.value = m;
@@ -263,21 +270,32 @@
     var b = bay(), len = +$("len").value; if (!b || !state.start) return;
     var i0 = b.slots.findIndex(function (s) { return s.t === state.start; });
     var total = 0; for (var i = 0; i < len / state.day.slot_minutes; i++) total += b.slots[i0 + i].price;
+    var d = state.day, guests = +$("players").value - 1, guestFee = 0;
+    if (d.plan !== "none" && guests > 0 && d.guest_passes_left !== null) guestFee = Math.max(0, guests - d.guest_passes_left) * d.guest_fee_cents;
+    total += guestFee;
+    var early = b.slots[i0].state === "early";
     var end = toMin(state.start) + len, eh = Math.floor(end / 60), em = end % 60;
     $("summary").textContent = b.name + ", " + ampm(state.start) + " to " + ampm(eh + ":" + (em < 10 ? "0" : "") + em);
     $("price").textContent = len ? money(total) : "";
     var signed = state.me && state.me.signed_in;
     $("book").disabled = !len || !signed;
-    $("book").textContent = !signed ? "Sign in above to book" : total ? "Book and pay " + money(total) : "Book";
-    $("policy").textContent = total ? "Cancel at least 24 hours ahead for a full refund." : "";
+    $("book").textContent = !signed ? "Sign in above to book" : early ? "Request early start" : total ? "Book and pay " + money(total) : "Book";
+    var notes = [];
+    if (early) notes.push("We open early only when someone can be here, so staff confirm early starts by text. Ask by " + ampm(d.early_deadline) + " the day before.");
+    if (guestFee) notes.push("Includes " + money(guestFee) + " for guests beyond your guest passes.");
+    if (total && !early) notes.push("Cancel at least 24 hours ahead for a full refund.");
+    if (d.plan !== "none" && !early) notes.push("Scan the code at the front desk when you arrive; bookings with no check-in after 15 minutes are released.");
+    $("policy").textContent = notes.join(" ");
   }
 
   $("len").onchange = function () { updateTotal(); renderSlots(); };
+  $("players").onchange = updateTotal;
   $("book").onclick = function () {
     var btn = $("book"); btn.disabled = true;
     api("/api/bookings", { bay_id: state.bay, date: state.date, start: state.start, minutes: +$("len").value, guests: +$("players").value - 1 })
       .then(function (r) {
         if (r.checkout_url) { location.href = r.checkout_url; return; }
+        if (r.requested) { flash("Early start requested. We'll text you once staff confirm it."); state.start = null; return refresh(); }
         flash("You're booked. We'll send the details" + (state.me.plan !== "none" ? "." : " to you."));
         state.start = null; return refresh();
       })
@@ -308,11 +326,28 @@
   };
   $("signout").onclick = function () { api("/api/auth/signout", {}).then(function () { location.href = "/book"; }); };
 
-  function refresh() { return loadMe().then(loadDay).then(function () { if (state.start) renderForm(); }); }
+  function refresh() {
+    return loadMe().then(function () {
+      var here = pendingHere();
+      if (here && state.me.signed_in) return checkIn(here).then(loadMe);
+      if (here) flash("Sign in to check in for your booking.");
+    }).then(loadDay).then(function () { if (state.start) renderForm(); });
+  }
+
+  // Scanned the front-desk QR code: check in now, or right after signing in.
+  function checkIn(code) {
+    return api("/api/checkin", { code: code }).then(function (r) {
+      hereCode = null; try { sessionStorage.removeItem("otgHere"); } catch (e) {}
+      flash((r.already ? "You're already checked in: " : "You're checked in: ") + r.bay + ", " + r.when + ". Enjoy your round.");
+    }).catch(function (e) { hereCode = null; try { sessionStorage.removeItem("otgHere"); } catch (x) {} flash(e.message, true); });
+  }
+  var hereCode = null;
+  function pendingHere() { try { return sessionStorage.getItem("otgHere") || hereCode; } catch (e) { return hereCode; } }
 
   // Back from Stripe.
   var q = new URLSearchParams(location.search);
   var start = Promise.resolve();
+  if (q.get("here")) { hereCode = q.get("here"); try { sessionStorage.setItem("otgHere", q.get("here")); } catch (e) {} history.replaceState(null, "", "/book"); }
   if (q.get("paid")) flash("Payment received. Your booking shows below once it's confirmed (usually a few seconds).");
   if (q.get("release")) start = api("/api/bookings/" + q.get("release") + "/release", {}).catch(function () {}).then(function () { flash("No payment was taken, and that time is free again."); });
   if (q.get("paid") || q.get("release")) history.replaceState(null, "", "/book");
