@@ -5,6 +5,7 @@ import { pool, logEvent } from "./db.js";
 import { upsertPlayer, normalizeEmail, normalizePhone } from "./stripeHandlers.js";
 import { notifyCustomer, notifyOwner, eventsEmails, kickOutbox, customerMessagesLive } from "./notify.js";
 import { inquiryReply, ownerInquiry, ownerInquiryNudge } from "./templates.js";
+import { staffOnly } from "./bookings.js";
 
 // Event inquiries: the site's Events form posts here (replacing Formspree). Each one is stored,
 // answered automatically, and alerted to the owner. Unhandled ones are re-alerted after 24 hours.
@@ -139,6 +140,37 @@ export function mountInquiries(app: Express) {
     const r = await pool.query("update inquiries set status = 'handled', handled_at = now() where id = $1 and status <> 'handled' returning id", [id]).catch(() => ({ rowCount: 0 }));
     if (r.rowCount) await logEvent(pool, "inquiry.handled", { inquiry_id: id });
     res.type("html").send(page("<p>Marked handled. You won't be reminded about this one.</p>"));
+  });
+
+  // The Inquiries tab on the /staff page: the list (newest first, open ones by default) and a status change.
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  app.get("/api/staff/inquiries", staffOnly, async (req, res) => {
+    try {
+      const status = req.query.status === "all" ? null : typeof req.query.status === "string" ? req.query.status : "new";
+      const q = await pool.query(
+        `select id, created_at, name, email, phone, package, event_date, guests, message, raw, status, handled_at
+           from inquiries where $1::text is null or status = $1 order by created_at desc limit 300`, [status]);
+      const c = await pool.query("select count(*)::int as n from inquiries where status = 'new'");
+      res.json({ open: c.rows[0].n, inquiries: q.rows });
+    } catch (e) {
+      console.error("staff inquiries failed:", (e as Error).message);
+      res.status(500).json({ error: "Something went wrong. Try again." });
+    }
+  });
+  app.post("/api/staff/inquiries/:id/status", staffOnly, express.json({ limit: "4kb" }), async (req, res) => {
+    const id = req.params.id, status = (req.body ?? {}).status;
+    if (!UUID.test(id) || !["new", "handled", "spam"].includes(status)) return res.status(400).json({ error: "Bad request." });
+    try {
+      const r = await pool.query(
+        `update inquiries set status = $2, handled_at = case when $2 = 'new' then null else coalesce(handled_at, now()) end
+          where id = $1 returning id, status, handled_at`, [id, status]);
+      if (!r.rowCount) return res.status(404).json({ error: "Inquiry not found." });
+      await logEvent(pool, `inquiry.${status === "new" ? "reopened" : status}`, { inquiry_id: id, by: "staff" });
+      res.json({ ok: true, inquiry: r.rows[0] });
+    } catch (e) {
+      console.error("staff inquiry status failed:", (e as Error).message);
+      res.status(500).json({ error: "Something went wrong. Try again." });
+    }
   });
 
   // Keyed reads: the inquiry list, and the log of every automatic message (including held ones).
