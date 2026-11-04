@@ -393,7 +393,7 @@ export async function bookingTick() {
 
 // ---- routes ----------------------------------------------------------------------
 
-function staffOnly(req: Request, res: Response, next: NextFunction) {
+export function staffOnly(req: Request, res: Response, next: NextFunction) {
   const key = (process.env.OTG_STAFF_KEY ?? process.env.OTG_READ_KEY)?.trim();
   if (!key) return res.status(500).json({ error: "staff key not configured" });
   if (req.header("X-OTG-Key") !== key) return res.status(401).json({ error: "Wrong staff key." });

@@ -40,15 +40,33 @@
   #detail { white-space:pre-line; }
   textarea { width:100%; min-height:260px; font:12px/1.4 ui-monospace, Menlo, monospace; }
   .hidden { display:none; }
+  nav.tabs { display:flex; gap:4px; width:100%; }
+  nav.tabs button { background:transparent; color:var(--cream); border-bottom:3px solid transparent; font-weight:normal; padding:6px 12px; }
+  nav.tabs button.on { border-bottom-color:var(--gold); font-weight:600; }
+  .badge { display:inline-block; min-width:20px; padding:0 6px; margin-left:4px; border-radius:10px; background:var(--gold); color:var(--green); font-size:12px; font-weight:600; text-align:center; }
+  .inq { background:#fff; border:1px solid var(--line); border-left:4px solid var(--gold); padding:12px 14px; margin-bottom:12px; }
+  .inq.handled, .inq.spam { border-left-color:var(--line); }
+  .inq h3 { font:normal 18px Georgia, serif; margin:0 0 4px; }
+  .inq .meta { color:var(--muted); font-size:13px; margin-bottom:8px; }
+  .inq dl { display:grid; grid-template-columns:max-content 1fr; gap:2px 12px; margin:0 0 8px; font-size:14px; }
+  .inq dt { color:var(--muted); } .inq dd { margin:0; overflow-wrap:anywhere; }
+  .inq .note { white-space:pre-line; background:#faf7f0; padding:8px 10px; margin:0 0 10px; }
+  .inq .row a, .inq .row button { flex:0 0 auto; }
+  a.btn { display:inline-block; padding:8px 14px; background:var(--gold); color:var(--green); font-weight:600; text-decoration:none; }
+  .empty { color:var(--muted); padding:24px 0; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Bay schedule</h1>
+  <nav class="tabs"><button id="tabBays" class="on">Bays</button><button id="tabInq">Inquiries<span class="badge hidden" id="inqCount"></span></button></nav>
+  <h1 id="title">Bay schedule</h1>
+  <span id="dateCtl" class="row" style="flex:0 0 auto">
   <button class="plain" id="prev">&larr;</button>
   <input type="date" id="date">
   <button class="plain" id="next">&rarr;</button>
   <button class="plain" id="today">Today</button>
+  </span>
+  <select id="inqFilter" class="hidden"><option value="new">Open</option><option value="handled">Handled</option><option value="spam">Spam</option><option value="all">All</option></select>
 </header>
 <main>
   <div id="flash"></div>
@@ -58,6 +76,9 @@
     <div class="row"><input id="key" type="password" autocomplete="off"><button id="savekey">Save</button></div>
   </section>
 
+  <div id="inqView" class="hidden"><div id="inqList"></div></div>
+
+  <div id="bayView">
   <div class="wrap"><table id="sched"></table></div>
 
   <div class="grid">
@@ -114,6 +135,7 @@
     <p><button id="cfgSave">Save changes</button></p>
     <details><summary>Current rules (defaults plus your changes)</summary><pre id="eff" style="font-size:12px;white-space:pre-wrap"></pre></details>
   </section>
+  </div>
 </main>
 <script>
 (function () {
@@ -246,15 +268,75 @@
     api("PUT", "/api/staff/settings", { overrides: v }).then(function (j) { flash("Saved."); $("eff").textContent = JSON.stringify(j.effective, null, 2); load(); }).catch(function (e) { flash(e.message, true); });
   };
 
-  $("savekey").onclick = function () { key = $("key").value.trim(); try { localStorage.setItem("otgStaffKey", key); } catch (e) {} load(); loadCfg(); };
+  // ---- inquiries ----
+  var KNOWN = ["name", "full_name", "fullName", "email", "_replyto", "email_address", "phone", "phone_number", "tel", "package", "event_type", "eventType", "type",
+    "date", "event_date", "eventDate", "preferred_date", "preferredDate", "guests", "guest_count", "guestCount", "group_size", "groupSize", "headcount", "party_size",
+    "message", "details", "notes", "comments", "company_website"];
+  var nice = function (k) { k = k.replace(/[_-]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").trim(); return k.charAt(0).toUpperCase() + k.slice(1); };
+  function when(ts) { return new Date(ts).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); }
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function setCount(n) { var b = $("inqCount"); b.textContent = n; b.classList.toggle("hidden", !n); }
+  function loadInq() {
+    return api("GET", "/api/staff/inquiries?status=" + $("inqFilter").value).then(function (j) { $("keybox").classList.add("hidden"); setCount(j.open); renderInq(j.inquiries); })
+      .catch(function (e) { if (view === "inq") flash(e.message, true); });
+  }
+  function renderInq(list) {
+    var box = $("inqList"); box.innerHTML = "";
+    if (!list.length) { box.appendChild(el("p", "empty", $("inqFilter").value === "new" ? "No open inquiries. You're all caught up." : "Nothing here.")); return; }
+    list.forEach(function (i) {
+      var c = el("div", "inq " + i.status);
+      c.appendChild(el("h3", "", i.name || i.email || i.phone || "No name"));
+      c.appendChild(el("div", "meta", "Sent " + when(i.created_at) + " · " + (i.status === "new" ? "Open" : i.status === "handled" ? "Handled" + (i.handled_at ? " " + when(i.handled_at) : "") : "Spam")));
+      var dl = el("dl");
+      function add(k, v, href) { if (!v) return; dl.appendChild(el("dt", "", k)); var dd = el("dd"); if (href) { var a = el("a", "", v); a.href = href; dd.appendChild(a); } else dd.textContent = v; dl.appendChild(dd); }
+      add("Email", i.email, i.email ? "mailto:" + i.email : null);
+      add("Phone", i.phone, i.phone ? "tel:" + i.phone.replace(/[^\d+]/g, "") : null);
+      add("Package", i.package); add("Date", i.event_date); add("Guests", i.guests);
+      var raw = i.raw || {};
+      Object.keys(raw).forEach(function (k) { if (KNOWN.indexOf(k) < 0 && String(raw[k]).trim()) add(nice(k), String(raw[k])); });
+      c.appendChild(dl);
+      if (i.message) c.appendChild(el("p", "note", i.message));
+      var row = el("div", "row");
+      if (i.email) {
+        var a = el("a", "btn", "Reply by email");
+        a.href = "mailto:" + encodeURIComponent(i.email) + "?subject=" + encodeURIComponent("Your event inquiry at On The Green") + "&body=" + encodeURIComponent("Hi " + ((i.name || "").split(" ")[0] || "there") + ",\n\n");
+        row.appendChild(a);
+      }
+      function btn(label, status, plain, done) {
+        var b = el("button", plain ? "plain" : "", label);
+        b.onclick = function () { b.disabled = true; api("POST", "/api/staff/inquiries/" + i.id + "/status", { status: status }).then(function () { flash(done); loadInq(); }).catch(function (e) { b.disabled = false; flash(e.message, true); }); };
+        row.appendChild(b);
+      }
+      if (i.status === "new") { btn("Mark handled", "handled", false, "Marked handled. No more reminders for this one."); btn("Spam", "spam", true, "Marked as spam."); }
+      else btn("Reopen", "new", true, "Reopened.");
+      c.appendChild(row);
+      box.appendChild(c);
+    });
+  }
+  var view = "bays";
+  function setView(v) {
+    view = v; flash("");
+    $("tabBays").classList.toggle("on", v === "bays"); $("tabInq").classList.toggle("on", v === "inq");
+    $("bayView").classList.toggle("hidden", v !== "bays"); $("dateCtl").classList.toggle("hidden", v !== "bays");
+    $("inqView").classList.toggle("hidden", v !== "inq"); $("inqFilter").classList.toggle("hidden", v !== "inq");
+    $("title").textContent = v === "inq" ? "Event inquiries" : "Bay schedule";
+    try { history.replaceState(null, "", v === "inq" ? "#inquiries" : location.pathname); } catch (e) {}
+    if (v === "inq") loadInq(); else load();
+  }
+  $("tabBays").onclick = function () { setView("bays"); };
+  $("tabInq").onclick = function () { setView("inq"); };
+  $("inqFilter").onchange = loadInq;
+
+  $("savekey").onclick = function () { key = $("key").value.trim(); try { localStorage.setItem("otgStaffKey", key); } catch (e) {} load(); loadCfg(); loadInq(); };
   $("date").value = todayEt();
   $("date").onchange = load;
   $("prev").onclick = function () { $("date").value = shift($("date").value, -1); load(); };
   $("next").onclick = function () { $("date").value = shift($("date").value, 1); load(); };
   $("today").onclick = function () { $("date").value = todayEt(); load(); };
   if (!key) $("keybox").classList.remove("hidden");
-  load(); loadCfg();
-  setInterval(load, 60000);
+  if (location.hash === "#inquiries") setView("inq"); else { load(); loadInq(); }
+  loadCfg();
+  setInterval(function () { if (view === "bays") load(); loadInq(); }, 60000);
 })();
 </script>
 </body>
