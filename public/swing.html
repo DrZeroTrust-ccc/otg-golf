@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tempo | On The Green</title>
+<meta name="theme-color" content="#0f2a1d">
+<link rel="icon" href="/book/icon-192.png" type="image/png">
+<style>
+  /* Premier bay screen: dark so it sits quietly next to the sim screen. Video left, numbers right. */
+  :root { --bg:#0b1f15; --panel:#11291c; --line:#24402f; --cream:#f6f1e7; --muted:#9fb0a5; --gold:#c4a26a;
+          --good:#4cc27a; --close:#e3b341; --off:#e0614f; --ink:#0b1f15; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  [hidden] { display:none !important; }
+  html, body { height: 100%; }
+  body { margin:0; background:var(--bg); color:var(--cream); font:16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { display:flex; align-items:center; gap:14px; padding:12px 20px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header img { width:34px; height:34px; }
+  h1 { font-family: Georgia, "Times New Roman", serif; font-weight:normal; font-size:24px; margin:0; }
+  .who { color:var(--gold); font-size:15px; }
+  .grow { flex:1; }
+  button { font:inherit; cursor:pointer; border:0; color:inherit; }
+  .btn { background:var(--gold); color:var(--ink); padding:9px 16px; font-weight:600; }
+  .btn.ghost { background:none; color:var(--cream); border:1px solid var(--line); }
+  .btn:disabled { opacity:.5; cursor:default; }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline:2px solid var(--gold); outline-offset:2px; }
+  main { display:grid; grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr); gap:20px; padding:20px; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+  .stage { position:relative; background:#000; aspect-ratio: 16 / 9; max-width:100%; overflow:hidden; }
+  .stage video, .stage canvas { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; }
+  .stage .empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; color:var(--muted); padding:20px; }
+  .timeline { margin-top:12px; }
+  .bar { display:flex; height:28px; background:var(--panel); border:1px solid var(--line); }
+  .bar div { display:flex; align-items:center; justify-content:center; font-size:13px; white-space:nowrap; overflow:hidden; }
+  .bar .b { background:#2c5a40; } .bar .d { background:var(--gold); color:var(--ink); }
+  .ticks { position:relative; display:flex; justify-content:space-between; font-size:12px; color:var(--muted); margin-top:4px; }
+  .ticks #tickTop { position:absolute; left:75%; transform:translateX(-50%); }
+  .status { display:flex; gap:16px; flex-wrap:wrap; font-size:13px; color:var(--muted); margin-top:10px; align-items:center; }
+  .meter { display:inline-block; vertical-align:middle; width:90px; height:8px; background:var(--panel); border:1px solid var(--line); position:relative; }
+  .meter i { position:absolute; left:0; top:0; bottom:0; background:var(--good); width:0; }
+  .meter b { position:absolute; top:-3px; bottom:-3px; width:2px; background:var(--off); }
+  aside { display:flex; flex-direction:column; gap:16px; min-width:0; }
+  .card { background:var(--panel); border:1px solid var(--line); padding:16px 18px; }
+  .label { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+  .ratio { font-family: Georgia, "Times New Roman", serif; font-size:96px; line-height:1; margin:8px 0 4px; font-variant-numeric: tabular-nums; }
+  .ratio small { font-size:40px; color:var(--muted); }
+  .chip { display:inline-block; padding:4px 10px; font-size:14px; font-weight:600; color:var(--ink); background:var(--muted); }
+  .chip.good { background:var(--good); } .chip.close { background:var(--close); } .chip.off { background:var(--off); }
+  .times { display:flex; gap:24px; margin-top:12px; font-variant-numeric: tabular-nums; }
+  .times b { display:block; font-size:22px; }
+  .stats { display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; margin-top:8px; font-variant-numeric: tabular-nums; }
+  .stats b { display:block; font-size:24px; }
+  #chart { width:100%; height:120px; display:block; margin-top:10px; }
+  .list { max-height:220px; overflow:auto; margin-top:6px; }
+  .row { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:6px 0; border-top:1px solid var(--line); font-variant-numeric: tabular-nums; font-size:15px; }
+  .row:first-child { border-top:0; }
+  .row .x { background:none; color:var(--muted); padding:2px 8px; border:1px solid var(--line); font-size:12px; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:8px; background:var(--muted); }
+  .dot.good { background:var(--good); } .dot.close { background:var(--close); } .dot.off { background:var(--off); }
+  .beat { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .beat .pulses { display:flex; gap:8px; margin-left:auto; }
+  .beat .pulses span { width:16px; height:16px; border-radius:50%; background:var(--line); transition: background .08s; }
+  .beat .pulses span.on { background:var(--gold); }
+  select, input[type=text], input[type=password], input[type=number] { font:inherit; background:var(--bg); color:var(--cream); border:1px solid var(--line); padding:8px 10px; max-width:100%; }
+  dialog { background:var(--panel); color:var(--cream); border:1px solid var(--line); padding:20px; width:min(560px, 92vw); }
+  dialog::backdrop { background:rgba(0,0,0,.6); }
+  .field { display:flex; flex-direction:column; gap:4px; margin-bottom:12px; }
+  .field span { font-size:13px; color:var(--muted); }
+  .field small { color:var(--muted); font-size:12px; }
+  .msg { font-size:14px; color:var(--close); min-height:20px; }
+  .msg.err { color:var(--off); }
+  @media (prefers-reduced-motion: reduce) { .beat .pulses span { transition:none; } }
+</style>
+</head>
+<body>
+<header>
+  <img src="/book/logo-128.png" alt="On The Green">
+  <h1>Tempo</h1>
+  <span class="who" id="who">No one selected</span>
+  <span class="grow"></span>
+  <button class="btn ghost" id="setupBtn">Setup</button>
+  <button class="btn" id="sessionBtn">Start session</button>
+</header>
+
+<main>
+  <section>
+    <div class="stage">
+      <video id="video" playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div class="empty" id="empty">Open Setup, pick the camera and microphone, then press Start camera.</div>
+    </div>
+    <div class="timeline" aria-label="Last swing timeline">
+      <div class="bar" id="bar"><div class="b" style="flex:3">Backswing</div><div class="d" style="flex:1">Down</div></div>
+      <div class="ticks"><span>Takeaway</span><span id="tickTop">Top</span><span>Impact</span></div>
+    </div>
+    <div class="status">
+      <span id="fps">Camera off</span>
+      <span>Mic <span class="meter" id="meter"><i></i><b></b></span></span>
+      <span id="mode">Shots: impact sound</span>
+      <span class="msg" id="msg" role="status"></span>
+    </div>
+  </section>
+
+  <aside>
+    <div class="card">
+      <div class="label">Last swing</div>
+      <div class="ratio" id="ratio">-<small> : 1</small></div>
+      <span class="chip" id="chip">Waiting for a swing</span>
+      <div class="times">
+        <div><span class="label">Backswing</span><b id="backMs">-</b></div>
+        <div><span class="label">Downswing</span><b id="downMs">-</b></div>
+        <div><span class="label">Target</span><b>3 : 1</b></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="label">This session</div>
+      <div class="stats">
+        <div><span class="label">Swings</span><b id="count">0</b></div>
+        <div><span class="label">Average</span><b id="mean">-</b></div>
+        <div><span class="label">Consistency</span><b id="cons">-</b></div>
+      </div>
+      <canvas id="chart" aria-label="Tempo ratio for each swing this session, with the 2.7 to 3.3 target band"></canvas>
+      <div class="list" id="list"></div>
+    </div>
+
+    <div class="card">
+      <div class="label">Training beat</div>
+      <p class="muted" style="margin:6px 0 10px;color:var(--muted);font-size:14px">Three tones: start back, top, impact. Swing along with them.</p>
+      <div class="beat">
+        <button class="btn ghost" id="beatBtn">Start beat</button>
+        <select id="beatSpeed" aria-label="Backswing length">
+          <option value="750">Quick (0.75 s back)</option>
+          <option value="900" selected>Medium (0.90 s back)</option>
+          <option value="1050">Smooth (1.05 s back)</option>
+        </select>
+        <div class="pulses" aria-hidden="true"><span></span><span></span><span></span></div>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<dialog id="setup">
+  <h1 style="font-size:20px;margin-bottom:14px">Setup</h1>
+  <label class="field"><span>Staff key</span><input type="password" id="key" autocomplete="off"><small>Same key as the staff page.</small></label>
+  <label class="field"><span>Who's hitting</span>
+    <select id="booking"><option value="">Walk-in / not booked</option></select>
+  </label>
+  <label class="field" id="labelField"><span>Name (for a walk-in)</span><input type="text" id="label" maxlength="80"></label>
+  <label class="field"><span>Camera</span><select id="camera"></select><small>Face-on or down-the-line both work for tempo. Higher frame rate is more precise.</small></label>
+  <label class="field"><span>Microphone</span><select id="mic"></select></label>
+  <label class="field"><span>Count a shot when</span>
+    <select id="trigger">
+      <option value="sound">I hear the impact (best with a ball)</option>
+      <option value="motion">The hands swing through (practice swings, no mic)</option>
+    </select>
+  </label>
+  <label class="field"><span>Impact sound sensitivity</span><input type="range" id="sens" min="0.5" max="2.5" step="0.1" value="1"><small>Raise it if real shots are missed; lower it if other bays set it off.</small></label>
+  <label class="field"><span>Sound delay (ms)</span><input type="number" id="delay" min="0" max="200" step="5" value="0"><small>Leave at 0 unless a hand-timed check shows the sound arrives late.</small></label>
+  <div class="msg" id="setupMsg"></div>
+  <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
+    <button class="btn ghost" id="closeSetup">Close</button>
+    <button class="btn" id="startCam">Start camera</button>
+  </div>
+</dialog>
+
+<script type="module">
+import * as T from "/swing/tempo.mjs";
+
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k, d = "") { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+let key = store.get("otgStaffKey");
+const api = async (method, path, body) => {
+  const r = await fetch(path, { method, headers: { "X-OTG-Key": key, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(j.error || `Error ${r.status}`), { status: r.status });
+  return j;
+};
+const say = (text, err = false) => { const m = $("msg"); m.textContent = text; m.className = err ? "msg err" : "msg"; };
+
+// ---------- settings ----------
+const settings = {
+  trigger: store.get("swingTrigger", "sound"), sens: Number(store.get("swingSens", "1")) || 1, delay: Number(store.get("swingDelay", "0")) || 0,
+  camera: store.get("swingCamera"), mic: store.get("swingMic"),
+};
+$("key").value = key; $("trigger").value = settings.trigger; $("sens").value = settings.sens; $("delay").value = settings.delay;
+const showMode = () => { $("mode").textContent = settings.trigger === "sound" ? "Shots: impact sound" : "Shots: hand motion"; };
+showMode();
+
+// ---------- session ----------
+let session = null; // { id, who }
+try { session = JSON.parse(store.get("swingSession", "null")); } catch { session = null; }
+let swings = []; // { id, ratio, backswing_ms, downswing_ms }
+const pending = []; // swings waiting to be saved (network blip)
+
+function renderSession() {
+  $("sessionBtn").textContent = session ? "End session" : "Start session";
+  $("who").textContent = session ? session.who : (selectedWho() || "No one selected");
+  const sum = T.summarize(swings.map((s) => s.ratio));
+  $("count").textContent = String(sum.count);
+  $("mean").textContent = sum.mean == null ? "-" : sum.mean.toFixed(1);
+  $("cons").textContent = sum.consistency ?? (sum.count ? "need 3" : "-");
+  $("list").innerHTML = "";
+  [...swings].reverse().forEach((s, i) => {
+    const row = document.createElement("div"); row.className = "row";
+    const n = swings.length - i;
+    row.innerHTML = `<span><i class="dot ${T.rateRatio(s.ratio)}"></i>#${n} &nbsp; ${s.ratio.toFixed(1)} : 1</span><span style="color:var(--muted)">${s.backswing_ms} / ${s.downswing_ms} ms</span>`;
+    const x = document.createElement("button"); x.className = "x"; x.textContent = "Remove"; x.title = "Throw out a bad read";
+    x.onclick = () => removeSwing(s);
+    row.appendChild(x); $("list").appendChild(row);
+  });
+  drawChart();
+}
+
+function drawChart() {
+  const c = $("chart"), dpr = devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  c.width = w * dpr; c.height = h * dpr;
+  const g = c.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+  const lo = 1.5, hi = 4.5, y = (v) => h - 14 - ((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo)) * (h - 24);
+  g.fillStyle = "rgba(76,194,122,.15)"; g.fillRect(28, y(3.3), w - 28, y(2.7) - y(3.3));
+  g.strokeStyle = "rgba(76,194,122,.6)"; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(28, y(3)); g.lineTo(w, y(3)); g.stroke(); g.setLineDash([]);
+  g.fillStyle = "#9fb0a5"; g.font = "11px sans-serif"; g.textAlign = "right";
+  for (const v of [2, 3, 4]) g.fillText(String(v), 22, y(v) + 4);
+  const last = swings.slice(-30);
+  if (!last.length) { g.textAlign = "left"; g.fillText("Each swing shows up here.", 36, 14); return; }
+  const step = (w - 40) / Math.max(1, last.length - 1);
+  g.strokeStyle = "#c4a26a"; g.lineWidth = 2; g.beginPath();
+  last.forEach((s, i) => { const px = 34 + i * step; i ? g.lineTo(px, y(s.ratio)) : g.moveTo(px, y(s.ratio)); }); g.stroke();
+  const color = { good: "#4cc27a", close: "#e3b341", off: "#e0614f" };
+  last.forEach((s, i) => { g.fillStyle = color[T.rateRatio(s.ratio)]; g.beginPath(); g.arc(34 + i * step, y(s.ratio), i === last.length - 1 ? 5 : 3.5, 0, 7); g.fill(); });
+}
+
+async function loadSession() {
+  if (!session) { swings = []; renderSession(); return; }
+  try {
+    const j = await api("GET", `/api/swing/sessions/${session.id}`);
+    if (j.session.ended_at) { session = null; store.del("swingSession"); swings = []; }
+    else swings = j.swings.map((s) => ({ ...s, ratio: Number(s.ratio) }));
+  } catch (e) { if (e.status === 404) { session = null; store.del("swingSession"); } else say(e.message, true); }
+  renderSession();
+}
+
+function selectedWho() {
+  const o = $("booking").selectedOptions[0];
+  return o && o.value ? o.textContent : ($("label").value.trim() || "");
+}
+
+async function startSession() {
+  if (!key) { openSetup(); $("setupMsg").textContent = "Enter the staff key first."; return null; }
+  const booking_id = $("booking").value || null;
+  const j = await api("POST", "/api/swing/sessions", { booking_id, label: booking_id ? null : $("label").value.trim() || null, camera: camLabel, fps: Math.round(trackFps) || null });
+  session = { id: j.id, who: selectedWho() || "Walk-in" };
+  store.set("swingSession", JSON.stringify(session));
+  swings = []; renderSession();
+  return session;
+}
+
+$("sessionBtn").onclick = async () => {
+  try {
+    if (session) {
+      await api("POST", `/api/swing/sessions/${session.id}/end`);
+      session = null; store.del("swingSession"); swings = []; renderSession(); say("Session ended.");
+    } else { await startSession(); say("Session started."); }
+  } catch (e) { say(e.message, true); }
+};
+
+async function saveSwing(r) {
+  const body = { backswing_ms: r.backswingMs, downswing_ms: r.downswingMs, impact_source: r.impactSource, confidence: r.confidence };
+  try {
+    if (!session) await startSession();
+    if (!session) return;
+    const j = await api("POST", `/api/swing/sessions/${session.id}/swings`, body);
+    swings.push({ ...j.swing, ratio: Number(j.swing.ratio) });
+  } catch (e) {
+    if (e.status === 401) { say("Wrong staff key. Fix it in Setup; this swing wasn't saved.", true); return; }
+    if (e.status === 400 && session) { session = null; store.del("swingSession"); say(e.message, true); return; }
+    pending.push(body); say("Couldn't save just now; will retry.", true);
+    swings.push({ id: null, ratio: r.ratio, backswing_ms: r.backswingMs, downswing_ms: r.downswingMs });
+  }
+  renderSession();
+}
+setInterval(async () => {
+  if (!pending.length || !session) return;
+  const body = pending[0];
+  try {
+    const j = await api("POST", `/api/swing/sessions/${session.id}/swings`, body);
+    pending.shift();
+    const local = swings.find((s) => !s.id && s.backswing_ms === body.backswing_ms && s.downswing_ms === body.downswing_ms);
+    if (local) local.id = j.swing.id;
+    if (!pending.length) say("Saved.");
+  } catch {}
+}, 10_000);
+
+async function removeSwing(s) {
+  if (s.id) { try { await api("DELETE", `/api/swing/swings/${s.id}`); } catch (e) { say(e.message, true); return; } }
+  swings = swings.filter((x) => x !== s); renderSession();
+}
+
+// ---------- who's hitting ----------
+async function loadBookings() {
+  if (!key) return;
+  try {
+    const j = await api("GET", "/api/swing/premier-today");
+    const sel = $("booking"), keep = sel.value;
+    sel.innerHTML = '<option value="">Walk-in / not booked</option>';
+    for (const b of j.bookings) {
+      const o = document.createElement("option"); o.value = b.id;
+      o.textContent = `${b.start}-${b.end}  ${b.name || "Guest"}${b.member_number ? ` (${b.member_number})` : ""}${b.now ? "  - now" : ""}`;
+      sel.appendChild(o);
+    }
+    const now = j.bookings.find((b) => b.now);
+    sel.value = keep || (now ? now.id : "");
+    $("labelField").hidden = !!sel.value;
+    if (!session) $("who").textContent = selectedWho() || "No one selected";
+  } catch (e) { $("setupMsg").textContent = e.message; }
+}
+$("booking").onchange = () => { $("labelField").hidden = !!$("booking").value; if (!session) $("who").textContent = selectedWho() || "No one selected"; };
+$("label").oninput = () => { if (!session) $("who").textContent = selectedWho() || "No one selected"; };
+
+// ---------- setup dialog ----------
+function openSetup() { $("setup").showModal(); listDevices(); loadBookings(); }
+$("setupBtn").onclick = openSetup;
+$("closeSetup").onclick = () => $("setup").close();
+$("key").onchange = () => { key = $("key").value.trim(); store.set("otgStaffKey", key); loadBookings(); loadSession(); };
+$("trigger").onchange = () => { settings.trigger = $("trigger").value; store.set("swingTrigger", settings.trigger); showMode(); };
+$("sens").oninput = () => { settings.sens = Number($("sens").value); store.set("swingSens", String(settings.sens)); detector = T.createImpactDetector({ sensitivity: settings.sens }); };
+$("delay").onchange = () => { settings.delay = Math.max(0, Math.min(200, Number($("delay").value) || 0)); store.set("swingDelay", String(settings.delay)); };
+
+async function listDevices() {
+  try {
+    const all = await navigator.mediaDevices.enumerateDevices();
+    const fill = (sel, kind, saved) => {
+      sel.innerHTML = "";
+      all.filter((d) => d.kind === kind).forEach((d, i) => {
+        const o = document.createElement("option"); o.value = d.deviceId; o.textContent = d.label || `${kind === "videoinput" ? "Camera" : "Microphone"} ${i + 1}`;
+        sel.appendChild(o);
+      });
+      if (saved && [...sel.options].some((o) => o.value === saved)) sel.value = saved;
+    };
+    fill($("camera"), "videoinput", settings.camera);
+    fill($("mic"), "audioinput", settings.mic);
+    if (!$("camera").options.length) $("setupMsg").textContent = "No camera found. Plug one in and reopen Setup.";
+  } catch { $("setupMsg").textContent = "This browser can't list cameras."; }
+}
+
+// ---------- camera + body tracking ----------
+const video = $("video"), overlay = $("overlay"), og = overlay.getContext("2d");
+let landmarker = null, camLabel = null, trackFps = 0, camFps = 0;
+const buf = []; // hand samples, last ~4 s
+let lastLm = null, lastSwing = null;
+
+async function loadTracker() {
+  if (landmarker) return landmarker;
+  $("setupMsg").textContent = "Loading body tracking (first time takes a few seconds)...";
+  const { FilesetResolver, PoseLandmarker } = await import("/swing/mp/vision_bundle.mjs");
+  const files = await FilesetResolver.forVisionTasks("/swing/mp/wasm");
+  const opts = (delegate) => ({
+    baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task", delegate },
+    runningMode: "VIDEO", numPoses: 1,
+  });
+  try { landmarker = await PoseLandmarker.createFromOptions(files, opts("GPU")); }
+  catch { landmarker = await PoseLandmarker.createFromOptions(files, opts("CPU")); }
+  return landmarker;
+}
+
+$("startCam").onclick = async () => {
+  $("setupMsg").textContent = "";
+  key = $("key").value.trim(); store.set("otgStaffKey", key);
+  settings.camera = $("camera").value; settings.mic = $("mic").value;
+  store.set("swingCamera", settings.camera); store.set("swingMic", settings.mic);
+  try {
+    if (video.srcObject) video.srcObject.getTracks().forEach((t) => t.stop());
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: settings.camera ? { exact: settings.camera } : undefined, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 240 } },
+    });
+    video.srcObject = stream; await video.play();
+    const track = stream.getVideoTracks()[0];
+    camLabel = track.label || "Camera"; camFps = track.getSettings().frameRate || 0;
+    $("empty").hidden = true;
+    await listDevices();
+    await loadTracker();
+    await startMic();
+    $("setupMsg").textContent = "";
+    $("setup").close();
+    if (camFps && camFps < 60) say(`This camera runs at ${Math.round(camFps)} fps. Tempo works, but 120 fps or more is more precise.`);
+    startLoop();
+  } catch (e) {
+    $("setupMsg").textContent = e.name === "NotAllowedError" ? "The browser blocked the camera or mic. Allow them in the address bar and try again." : `Couldn't start: ${e.message}`;
+  }
+};
+
+let looping = false, frames = 0, fpsT = performance.now(), lastVideoTime = -1;
+function startLoop() {
+  if (looping) return; looping = true;
+  const onFrame = (now, meta) => {
+    const t = meta?.captureTime || meta?.expectedDisplayTime || now;
+    track(t);
+    schedule();
+  };
+  const schedule = () => {
+    if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(onFrame);
+    else requestAnimationFrame((now) => { if (video.currentTime !== lastVideoTime) { lastVideoTime = video.currentTime; track(now); } schedule(); });
+  };
+  schedule();
+}
+
+const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+let motionArmed = true;
+function track(t) {
+  if (!landmarker || video.readyState < 2) return;
+  let res;
+  try { res = landmarker.detectForVideo(video, performance.now()); } catch { return; }
+  frames++;
+  const n = performance.now();
+  if (n - fpsT > 1000) { trackFps = (frames * 1000) / (n - fpsT); frames = 0; fpsT = n; $("fps").textContent = `Camera ${Math.round(camFps) || "?"} fps, tracking ${Math.round(trackFps)} fps`; }
+  const lm = res.landmarks?.[0];
+  lastLm = lm || null;
+  if (lm && lm[15].visibility > 0.3 && lm[16].visibility > 0.3) {
+    const hands = mid(lm[15], lm[16]);
+    const sh = mid(lm[11], lm[12]), hp = mid(lm[23], lm[24]);
+    const scale = Math.hypot(sh.x - hp.x, sh.y - hp.y);
+    buf.push({ t, x: hands.x, y: hands.y, scale });
+    // Hands-only trigger: a fast swing through, then analyze once the follow-through is in.
+    if (settings.trigger === "motion" && buf.length > 2 && scale > 0) {
+      const p = buf[buf.length - 2], q = buf[buf.length - 1];
+      const v = Math.hypot(q.x - p.x, q.y - p.y) / scale / Math.max(1e-3, (q.t - p.t) / 1000);
+      if (v > 8 && motionArmed) { motionArmed = false; setTimeout(() => analyze(null, q.t), 450); setTimeout(() => (motionArmed = true), 1800); }
+    }
+  }
+  while (buf.length && buf[0].t < t - 4000) buf.shift();
+  draw();
+}
+
+const BONES = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28]];
+function draw() {
+  const w = overlay.clientWidth, h = overlay.clientHeight, dpr = devicePixelRatio || 1;
+  if (overlay.width !== w * dpr) { overlay.width = w * dpr; overlay.height = h * dpr; }
+  og.setTransform(dpr, 0, 0, dpr, 0, 0); og.clearRect(0, 0, w, h);
+  // Map video coordinates into the letterboxed area object-fit: contain uses.
+  const vw = video.videoWidth || 16, vh = video.videoHeight || 9, s = Math.min(w / vw, h / vh);
+  const ox = (w - vw * s) / 2, oy = (h - vh * s) / 2, P = (p) => [ox + p.x * vw * s, oy + p.y * vh * s];
+  if (lastLm) {
+    og.strokeStyle = "rgba(246,241,231,.85)"; og.lineWidth = 3;
+    for (const [a, b] of BONES) { if (lastLm[a].visibility < 0.3 || lastLm[b].visibility < 0.3) continue; og.beginPath(); og.moveTo(...P(lastLm[a])); og.lineTo(...P(lastLm[b])); og.stroke(); }
+  }
+  // Hand path of the last swing: backswing in green, downswing in gold.
+  if (lastSwing) {
+    const pts = buf.filter((p) => p.t >= lastSwing.takeawayT && p.t <= lastSwing.impactT + 30);
+    og.lineWidth = 4;
+    for (let i = 1; i < pts.length; i++) {
+      og.strokeStyle = pts[i].t <= lastSwing.topT ? "#4cc27a" : "#c4a26a";
+      og.beginPath(); og.moveTo(...P(pts[i - 1])); og.lineTo(...P(pts[i])); og.stroke();
+    }
+  }
+}
+
+// ---------- impact sound ----------
+let audioCtx = null, detector = T.createImpactDetector({ sensitivity: settings.sens }), perfOffset = 0;
+const WORKLET = `class Rms extends AudioWorkletProcessor { process(inputs) { const ch = inputs[0] && inputs[0][0]; if (ch) { let s = 0, pk = 0; for (let i = 0; i < ch.length; i++) { s += ch[i] * ch[i]; const a = Math.abs(ch[i]); if (a > pk) pk = a; } this.port.postMessage([Math.sqrt(s / ch.length), pk, currentTime]); } return true; } } registerProcessor("rms", Rms);`;
+async function startMic() {
+  if (audioCtx) { await audioCtx.close().catch(() => {}); audioCtx = null; }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: settings.mic ? { exact: settings.mic } : undefined, echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+  } catch (e) {
+    if (settings.trigger === "sound") { settings.trigger = "motion"; $("trigger").value = "motion"; showMode(); say("No microphone, so shots are counted from hand motion."); }
+    return;
+  }
+  audioCtx = new AudioContext({ latencyHint: "interactive" });
+  await audioCtx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" })));
+  const node = new AudioWorkletNode(audioCtx, "rms");
+  audioCtx.createMediaStreamSource(stream).connect(node);
+  const syncClock = () => { const ts = audioCtx.getOutputTimestamp?.(); perfOffset = ts && ts.performanceTime ? ts.performanceTime - ts.contextTime * 1000 : performance.now() - audioCtx.currentTime * 1000; };
+  syncClock(); setInterval(syncClock, 5000);
+  let peakShown = 0;
+  node.port.onmessage = ({ data: [rms, peak, ctxTime] }) => {
+    const t = perfOffset + ctxTime * 1000 - settings.delay;
+    peakShown = Math.max(peak, peakShown * 0.97);
+    const hit = detector.push(peak, t);
+    if (hit !== null && settings.trigger === "sound") onImpactSound(hit);
+  };
+  const meter = $("meter");
+  setInterval(() => {
+    meter.querySelector("i").style.width = `${Math.min(100, peakShown * 100)}%`;
+    meter.querySelector("b").style.left = `${Math.min(100, (Math.max(0.08 / settings.sens, (detector.floor * 8) / settings.sens)) * 100)}%`;
+  }, 100);
+}
+
+function onImpactSound(t) {
+  // The training beat's own tones can reach the mic; ignore sounds right on a beat.
+  if (beatTimesPlayed.some((b) => Math.abs(b - t) < 150)) return;
+  setTimeout(() => analyze(t, t), 350);
+}
+
+function analyze(soundT, aroundT) {
+  const samples = buf.filter((p) => p.t >= aroundT - 3200 && p.t <= aroundT + 400);
+  const r = T.analyzeSwing(samples, soundT == null ? {} : { soundImpactT: soundT });
+  if (!r.ok) {
+    if (/line up|never moved|not enough tracking/.test(r.reason)) return; // a sound from another bay, or nobody swinging: stay quiet
+    say(`Swing not counted: ${r.reason}.`); return;
+  }
+  say(r.confidence === "low" ? "Counted, but tracking was rough on that one." : "");
+  lastSwing = r; showSwing(r); saveSwing(r);
+}
+
+function showSwing(r) {
+  $("ratio").innerHTML = `${r.ratio.toFixed(1)}<small> : 1</small>`;
+  const rate = T.rateRatio(r.ratio);
+  const chip = $("chip"); chip.className = `chip ${rate}`;
+  chip.textContent = rate === "good" ? "On tempo" : r.ratio < T.TARGET_RATIO ? "Backswing quick for your downswing" : "Backswing slow for your downswing";
+  $("backMs").textContent = `${r.backswingMs} ms`; $("downMs").textContent = `${r.downswingMs} ms`;
+  const bar = $("bar");
+  bar.children[0].style.flex = String(r.backswingMs); bar.children[1].style.flex = String(r.downswingMs);
+  bar.children[0].textContent = `Backswing ${(r.backswingMs / 1000).toFixed(2)} s`;
+  bar.children[1].textContent = `${(r.downswingMs / 1000).toFixed(2)} s`;
+  $("tickTop").style.left = `${(100 * r.backswingMs) / (r.backswingMs + r.downswingMs)}%`;
+}
+
+// ---------- training beat ----------
+let beatCtx = null, beatTimer = null, beatTimesPlayed = [];
+function tone(at, freq) {
+  const o = beatCtx.createOscillator(), g = beatCtx.createGain();
+  o.frequency.value = freq; o.type = "sine";
+  g.gain.setValueAtTime(0.0001, at); g.gain.exponentialRampToValueAtTime(0.25, at + 0.008); g.gain.exponentialRampToValueAtTime(0.0001, at + 0.09);
+  o.connect(g).connect(beatCtx.destination); o.start(at); o.stop(at + 0.1);
+}
+function playCycle() {
+  const back = Number($("beatSpeed").value), times = T.beatTimes(back), start = beatCtx.currentTime + 0.1;
+  const perfStart = performance.now() + 100;
+  [523, 659, 988].forEach((f, i) => tone(start + times[i] / 1000, f));
+  beatTimesPlayed = [...beatTimesPlayed.filter((b) => b > performance.now() - 5000), ...times.map((x) => perfStart + x)];
+  const dots = document.querySelectorAll(".beat .pulses span");
+  times.forEach((x, i) => setTimeout(() => { dots[i].classList.add("on"); setTimeout(() => dots[i].classList.remove("on"), 140); }, 100 + x));
+  beatTimer = setTimeout(playCycle, 100 + times[2] + 3000);
+}
+$("beatBtn").onclick = () => {
+  if (beatTimer) { clearTimeout(beatTimer); beatTimer = null; $("beatBtn").textContent = "Start beat"; return; }
+  beatCtx = beatCtx || new AudioContext();
+  beatCtx.resume(); playCycle(); $("beatBtn").textContent = "Stop beat";
+};
+$("beatSpeed").onchange = () => { if (beatTimer) { clearTimeout(beatTimer); playCycle(); } };
+
+addEventListener("resize", () => { drawChart(); draw(); });
+await loadSession();
+await loadBookings();
+if (!key) openSetup();
+</script>
+</body>
+</html>
