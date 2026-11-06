@@ -7,6 +7,7 @@ import { mountInquiries, nudgeStaleInquiries } from "./inquiries.js";
 import { syncMemberNumbersToStripe, queueMemberNumberNotices } from "./members.js";
 import { dispatchOutbox, kickOutbox } from "./notify.js";
 import { mountBookings, onBookingCheckoutCompleted, onBookingCheckoutExpired, bookingTick } from "./bookings.js";
+import { mountSwing } from "./swing.js";
 
 const app = express();
 // Never let a stray promise rejection take the service down; log it and keep serving.
@@ -18,6 +19,7 @@ const stripe = stripeKey ? new Stripe(stripeKey) : null;
 mountRoutes(app);
 mountInquiries(app);
 mountBookings(app);
+mountSwing(app);
 
 app.get("/health", async (_req, res) => {
   try { await pool.query("select 1"); res.json({ ok: true }); }

@@ -20,3 +20,7 @@ export const icon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 51
 // The OTG logo as app icons (home screen) and a small header logo, read once at start-up.
 const IMAGES = ["icon-180.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png", "logo-128.png"];
 export const images: Record<string, Buffer> = Object.fromEntries(IMAGES.map((f) => [f, readFileSync(path.resolve("public", f))]));
+
+// Swing coaching (phase 1, tempo): the Premier bay screen and the tempo math it shares with the tests.
+export const swingPage = read("swing.html");
+export const tempoJs = read("swing-tempo.mjs");
