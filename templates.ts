@@ -45,6 +45,23 @@ export const tierLabel = (tier: string, annual = false) => (TIER_LABEL[tier] ?? 
 // Member numbers are stored as plain integers and always shown as OTG-0001.
 export const formatMemberNumber = (n: number | null | undefined) => (n ? `OTG-${String(n).padStart(4, "0")}` : null);
 
+// "Where things stand" in the welcome email. Edit this line as the build moves along; once
+// OPENING_DAY is set the welcome names the date instead.
+const CLUB_STATUS = "construction is in its final stretch and we're planning a soft open in December. I'll email you the date as soon as it's set.";
+
+function clubUpdate(open: string | null): string {
+  return [
+    "Here's where things stand and what's coming:",
+    "",
+    `- Opening: ${open ? `we open ${open}.` : CLUB_STATUS}`,
+    "- The bays: four bays on Foresight Sports simulators, plus a PuttView putting green you can reserve. Bay 1 is our Premier bay, set aside for members.",
+    `- Booking from your phone: our member app at go.otg.golf/book. Sign in with a code sent to your phone, book a bay, and tap "I'm here" when you arrive.${open ? "" : " Booking opens once we have an opening date."}`,
+    "- Early starts: members can ask to start up to an hour before we open.",
+    "- Swing coaching: we're building swing analysis into the Premier bay, starting with a tempo check. More on this soon.",
+    "- Events: private bays, team outings and full-club buyouts for up to 24 guests. Reply to this email if you'd like to plan one.",
+  ].join("\n");
+}
+
 export function memberWelcome(tier: string, annual: boolean, memberNumber?: number | null): Msg {
   const label = tierLabel(tier, annual);
   const num = formatMemberNumber(memberNumber);
@@ -54,21 +71,26 @@ export function memberWelcome(tier: string, annual: boolean, memberNumber?: numb
         ? `Your card is saved and nothing has been charged. Billing starts on opening day, ${open}.`
         : "Your card is saved and nothing has been charged. Billing starts on opening day, and I'll tell you the date before anything is charged.")
     : "Stripe has emailed your receipt separately.";
+  const closing = open
+    ? `We open ${open} at ${ADDRESS}. If you'd like a look around before then, reply and I'll set up a time.`
+    : `We're opening soon at ${ADDRESS}. If you'd like a look around before then, reply and I'll set up a time.`;
   return {
-    subject: tier === "founding" ? "You're a founding member of On The Green" : `Welcome to On The Green: your ${label}`,
+    subject: tier === "founding" ? "Welcome to the club: you're a founding member of On The Green" : `Welcome to the club: your On The Green ${label}`,
     text:
 `Hi {{first_name}},
 
-Thank you for joining On The Green. Your ${label} is confirmed.
+Welcome to the club. Your ${label} is confirmed${tier === "founding" ? ", and you're one of just 40 founding members" : ""}.
 ${num ? `\nYour member number is ${num}. Keep it handy: it's how we'll find you at the front desk and when you book.\n` : ""}
 ${billing}
 
 ${TIER_PERKS[tier] ?? ""}
 
-${openingLine()} Before then I'll send you how to book your first bay. If you'd like a look around before we open, reply to this email and I'll set up a time.
+${clubUpdate(open)}
+
+${closing}
 
 ${SIGNOFF}`.replace(/\n{3,}/g, "\n\n"),
-    sms: `On The Green: Welcome, {{first_name}}! Your ${label} is confirmed${num ? ` (member number ${num})` : ""}. ${open ? `We open ${open}.` : "We're opening soon."} Questions? Call or text ${PHONE}. Reply STOP to opt out.`,
+    sms: `On The Green: Welcome to the club, {{first_name}}! Your ${label} is confirmed${num ? ` (member number ${num})` : ""}. ${open ? `We open ${open}.` : "We're opening soon."} We've emailed you what's coming. Questions? Call or text ${PHONE}. Reply STOP to opt out.`,
   };
 }
 
