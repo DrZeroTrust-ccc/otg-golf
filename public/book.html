@@ -59,6 +59,7 @@
   .cancel { background:none; border:1px solid var(--line); padding:8px 10px; font-size:13px; color:var(--red); white-space:nowrap; }
   .muted { color:var(--muted); font-size:14px; }
   .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:8px; }
+  .waiver { white-space:pre-wrap; max-height:260px; overflow-y:auto; border:1px solid var(--line); background:#faf7f0; padding:12px; font-size:14px; }
   .hidden { display:none !important; }
 </style>
 </head>
@@ -96,6 +97,16 @@
   </section>
 
   <section id="mine" class="hidden"><h2>Your bookings</h2><div id="mineList"></div><p class="muted" id="mineNotes" style="margin-bottom:0"></p></section>
+
+  <section id="waiver" class="hidden">
+    <h2>Sign the waiver</h2>
+    <p class="muted">Everyone signs once before their first booking. It takes a minute.</p>
+    <div id="waiverText" class="waiver"></div>
+    <label for="wName">Type your full name to sign</label>
+    <input id="wName" type="text" autocomplete="name">
+    <div class="check"><input id="wAgree" type="checkbox"><label for="wAgree" style="margin:0">I have read this waiver and agree to it.</label></div>
+    <p style="margin-bottom:0"><button class="btn" id="wSign">Sign waiver</button></p>
+  </section>
 
   <section id="picker" class="hidden">
     <h2>Book a bay</h2>
@@ -143,10 +154,30 @@
       var who = $("who");
       if (me.signed_in) { who.textContent = (PLAN[me.plan] || "Guest") + (me.member_number ? " · " + me.member_number : ""); who.classList.remove("hidden"); }
       else who.classList.add("hidden");
+      renderWaiver();
       renderMine();
       renderDays();
     });
   }
+
+  // ---- waiver ----
+  function needWaiver() { var me = state.me; return !!(me && me.signed_in && me.waiver && me.waiver.required && !me.waiver.signed); }
+  function renderWaiver() {
+    $("waiver").classList.toggle("hidden", !needWaiver());
+    if (!needWaiver() || state.waiverVersion) return;
+    api("/api/waiver").then(function (w) {
+      state.waiverVersion = w.version;
+      $("waiverText").textContent = w.text;
+      if (!$("wName").value && state.me.name) $("wName").value = state.me.name;
+    }).catch(function (e) { flash(e.message, true); });
+  }
+  $("wSign").onclick = function () {
+    var btn = $("wSign"); btn.disabled = true;
+    api("/api/waiver", { name: $("wName").value, agree: $("wAgree").checked, version: state.waiverVersion })
+      .then(function () { flash("Thanks, your waiver is signed. You're all set to book."); return refresh(); })
+      .catch(function (e) { flash(e.message, true); state.waiverVersion = null; renderWaiver(); })
+      .then(function () { btn.disabled = false; });
+  };
 
   function renderMine() {
     var list = (state.me && state.me.bookings) || [];
@@ -286,8 +317,8 @@
     $("summary").textContent = b.name + ", " + ampm(state.start) + " to " + ampm(eh + ":" + (em < 10 ? "0" : "") + em);
     $("price").textContent = len ? money(total) : "";
     var signed = state.me && state.me.signed_in;
-    $("book").disabled = !len || !signed;
-    $("book").textContent = !signed ? "Sign in above to book" : early ? "Request early start" : total ? "Book and pay " + money(total) : "Book";
+    $("book").disabled = !len || !signed || needWaiver();
+    $("book").textContent = !signed ? "Sign in above to book" : needWaiver() ? "Sign the waiver above to book" : early ? "Request early start" : total ? "Book and pay " + money(total) : "Book";
     var notes = [];
     if (early) notes.push("We open early only when someone can be here, so staff confirm early starts by text. Ask by " + ampm(d.early_deadline) + " the day before.");
     if (guestFee) notes.push("Includes " + money(guestFee) + " for guests beyond your guest passes.");
@@ -307,7 +338,7 @@
         flash("You're booked. We'll send the details" + (state.me.plan !== "none" ? "." : " to you."));
         state.start = null; return refresh();
       })
-      .catch(function (e) { flash(e.message, true); btn.disabled = false; loadDay(); });
+      .catch(function (e) { flash(e.message, true); btn.disabled = false; refresh(); });
   };
 
   // ---- sign in ----
