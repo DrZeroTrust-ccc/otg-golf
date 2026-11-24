@@ -16,6 +16,7 @@ import {
   type Settings, type Plan,
 } from "./booking_rules.js";
 import { bookPage, staffPage, manifest, icon, images } from "./booking_pages.js";
+import { mountWaivers, waiverSignedAt, signedSql, WAIVER_VERSION } from "./waiver.js";
 
 type Db = pg.Pool | pg.PoolClient;
 type Bay = { id: string; name: string; kind: "sim" | "putt"; premier: boolean; sort: number };
@@ -151,6 +152,8 @@ async function createAppBooking(playerId: string, nb: NewBooking): Promise<{ sta
   const plan = await planOf(pool, playerId);
   const problem = ruleProblem(s, plan, { bay, date: nb.date, start: nb.start, minutes: nb.minutes, guests: nb.guests }, openingDay());
   if (problem) return { status: 400, body: { error: problem } };
+  if (s.waivers_on && !(await waiverSignedAt(pool, playerId)))
+    return { status: 403, body: { error: "Sign the waiver above before your first booking.", waiver_needed: true } };
   const paused = touchesPrime(s, nb.date, nb.start, nb.minutes) ? await pausedUntil(pool, s, playerId) : null;
   if (paused) return { status: 400, body: { error: `After ${s.strikes.limit} missed bookings, Prime times are paused for you until ${dateText(paused)}. Other times are open as usual.` } };
   const guest = guestSplit(s, plan, nb.guests, plan === "none" ? 0 : await passesUsed(pool, playerId, nb.date));
@@ -429,6 +432,8 @@ export function mountBookings(app: Express) {
     res.type("image/png").send(img);
   });
 
+  mountWaivers(app, async () => (await loadSettings()).waivers_on);
+
   app.post("/api/auth/start", json, wrap(startSignIn));
   app.post("/api/auth/verify", json, wrap(verifySignIn));
   app.post("/api/auth/signout", wrap(signOut));
@@ -449,6 +454,7 @@ export function mountBookings(app: Express) {
     const passes = plan === "none" ? null : guestSplit(s, plan, 0, await passesUsed(pool, pid, today)).left;
     res.json({
       signed_in: true, plan, open: !!first, days, name: p?.name ?? null, member_number: formatMemberNumber(p?.member_number),
+      waiver: { required: s.waivers_on, signed: !!(await waiverSignedAt(pool, pid)) },
       bookings: await myBookings(pid), refund_cutoff_hours: s.refund_cutoff_hours,
       guest_passes_left: passes, guest_fee_cents: s.guest_fee_cents, prime_paused_until: paused ? dateText(paused) : null,
     });
@@ -581,12 +587,12 @@ export function mountBookings(app: Express) {
     const rows = (await pool.query(
       `select b.id, b.kind, b.bay_id, b.starts_at, b.ends_at, b.status, b.source, b.plan, b.guests, b.price_cents, b.paid_cents, b.refunded_cents, b.note,
               b.checked_in_at, b.no_show_fee_cents, b.no_show_waived, b.guest_passes_used, b.guest_fee_cents, b.early,
-              p.name, p.phone, p.email, p.member_number
+              p.name, p.phone, p.email, p.member_number, ${signedSql("b.player_id", "$3")} as waiver_signed
          from bookings b left join players p on p.id = b.player_id
         where b.starts_at < $2 and b.ends_at > $1 and b.status in ('confirmed','pending_payment','paid_conflict','cancelled','no_show','requested','declined')
-        order by b.starts_at`, [etToUtc(date, 0), etToUtc(addDays(date, 1), 0)])).rows;
+        order by b.starts_at`, [etToUtc(date, 0), etToUtc(addDays(date, 1), 0), WAIVER_VERSION])).rows;
     res.json({
-      date, hours: hoursFor(s, date)?.map(fmtHm) ?? null, bays: await loadBays(),
+      date, hours: hoursFor(s, date)?.map(fmtHm) ?? null, bays: await loadBays(), waivers_on: s.waivers_on,
       bookings: rows.map((r) => ({ ...r, start: fmtHm(etParts(new Date(r.starts_at)).minutes), end: fmtHm(etParts(new Date(r.ends_at)).minutes), member_number: formatMemberNumber(r.member_number) })),
     });
   }));

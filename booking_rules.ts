@@ -57,6 +57,9 @@ export const DEFAULTS = {
   // Early access: members can ask to start up to this long before opening, by the deadline the day before.
   early_access_minutes: 60,
   early_access_deadline: "18:00",
+  // Waivers: when on, players sign the waiver online before their first booking. Leave off until
+  // the lawyer-approved wording is in waiver.ts.
+  waivers_on: false,
 };
 export type Settings = typeof DEFAULTS;
 

@@ -186,7 +186,7 @@
           var el = document.createElement("button"); el.className = "b " + (b.kind === "block" ? "block" : b.status);
           var label = b.kind === "block" ? (b.note || "Blocked") : (b.name || b.phone || b.note || "Walk-in");
           if (b.checked_in_at && b.status === "confirmed") el.className += " in";
-          el.textContent = ampm(b.start) + "-" + ampm(b.end) + " " + label + (b.member_number ? " (" + b.member_number + ")" : "") + (b.status === "requested" ? " · EARLY?" : b.status === "no_show" ? " · missed" : b.checked_in_at ? " · here" : "");
+          el.textContent = ampm(b.start) + "-" + ampm(b.end) + " " + label + (b.member_number ? " (" + b.member_number + ")" : "") + (b.status === "requested" ? " · EARLY?" : b.status === "no_show" ? " · missed" : b.checked_in_at ? " · here" : "") + (noWaiver(b) ? " · NO WAIVER" : "");
           el.onclick = function () { show(b); };
           td.appendChild(el);
         });
@@ -195,6 +195,9 @@
       t.appendChild(tr);
     }
   }
+
+  // Waivers are checked only once staff turn them on in Rules and prices.
+  function noWaiver(b) { return data.waivers_on && b.kind !== "block" && !b.waiver_signed && ["cancelled", "declined"].indexOf(b.status) < 0; }
 
   function show(b) {
     picked = b;
@@ -209,6 +212,7 @@
       b.guest_fee_cents ? "Guest fee: " + money(b.guest_fee_cents) : "",
       b.no_show_fee_cents ? "Missed-booking fee: " + money(b.no_show_fee_cents) + " (added to their next membership bill)" : "",
       b.kind !== "block" && b.note ? "Note: " + b.note : "",
+      b.kind !== "block" && data.waivers_on ? (b.waiver_signed ? "Waiver: signed" : "Waiver: NOT signed. Have them sign in on the booking page on their phone and sign it before they play.") : "",
     ].filter(Boolean);
     $("detail").textContent = lines.join("\n");
     $("detailbox").classList.remove("hidden");
